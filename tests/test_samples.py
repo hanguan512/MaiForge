@@ -95,6 +95,7 @@ class TestSampleExport(unittest.TestCase):
             for row in lines:
                 sample_path = out / row["song_id"] / f"inote_{row['chart_index']}.json"
                 self.assertTrue(sample_path.exists(), sample_path)
+                self.assertEqual(Path(row["sample"]), sample_path.resolve())
                 sample = json.loads(sample_path.read_text(encoding="utf-8"))
                 self.assertEqual(sample["sample_id"], row["sample_id"])
                 self.assertEqual(sample["chart_index"], row["chart_index"])

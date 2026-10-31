@@ -10,8 +10,11 @@ dist/
 # Generated / local data
 data/raw/
 data/processed/
+data/features/
+data/samples/
 assets/synthetic/
 out/
+runs/
 *.wav
 *.mp3
 *.flac

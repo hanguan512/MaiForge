@@ -59,6 +59,16 @@ class TestCompileFeatures(unittest.TestCase):
         self.assertEqual(maidata.signature(), parsed.signature())
         self.assertIn("4-1>2-7[16:7]", compiled)
 
+    def test_path_slide_track_flags(self):
+        text = (
+            "&title=t\n&wholebpm=120\n"
+            "&inote_5=(120){4}2x@$$z1[96:239]x,4-1>2-7[16:7]b,E\n"
+        )
+        maidata, compiled, parsed = roundtrip(text)
+        self.assertEqual(maidata.signature(), parsed.signature())
+        self.assertIn("2x@$$z1[96:239]x", compiled)
+        self.assertIn("4-1>2-7[16:7]b", compiled)
+
     def test_same_start_chain(self):
         text = "&title=t\n&wholebpm=120\n&inote_5=(120){4}1-3[4:1]*-4[8:1],E\n"
         maidata, compiled, parsed = roundtrip(text)

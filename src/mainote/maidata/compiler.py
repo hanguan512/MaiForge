@@ -229,8 +229,23 @@ def _format_slide(event: Event) -> str:
     if "rotate_star" in flags:
         s += "$$"
 
+    if event.chain_type == "path":
+        # A connected path has one duration for the whole path.  Track flags
+        # belong after that duration, not between segments.
+        for segment in event.slide:
+            s += _format_slide_shape(segment)
+        duration = event.duration
+        if duration is None and event.slide:
+            duration = event.slide[-1].duration
+        s += _format_duration(duration)
+        track_flags: set[str] = set()
+        for segment in event.slide:
+            track_flags.update(segment.flags)
+        s += _flag_suffix(track_flags)
+        return s
+
     for i, segment in enumerate(event.slide):
-        if i > 0 and event.chain_type != "path":
+        if i > 0:
             s += "*"
         s += _format_slide_shape(segment)
         s += _format_duration(segment.duration)

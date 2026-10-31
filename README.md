@@ -2,7 +2,7 @@
 
 **面向 maimai DX / simai 的音频 → maidata 谱面生成工具。**
 
-MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译为 `maidata.txt`，从而生成 simai 谱面。仓库目前包含 P0–P2 的基础能力：完整的格式工具链、音频时间轴前端、规则基线、数据集流水线和音符级评估。神经音频转谱面模型（P3）已经规划，但尚未训练。
+MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译为 `maidata.txt`，从而生成 simai 谱面。仓库目前包含 P0–P2 的基础能力，以及 P3 神经模型的训练/推理代码：完整的格式工具链、音频时间轴前端、规则基线、数据集流水线、窗口化训练管线和音符级评估。本仓库不包含已训练检查点；P3 训练需要 GPU 服务器。
 
 > **命名说明：** MaiForge 是项目名称。Python 包和命令行工具目前仍名为 `mainote`，后续计划重命名。
 
@@ -28,6 +28,7 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 - **音频前端：** ffmpeg 解码、numpy 起音检测、BPM/节拍/强拍跟踪，并支持通过 `--bpm` / `--first` 手动修正。
 - **规则基线：** 根据难度和等级条件，从音频生成合法的谱面。
 - **数据集流水线：** 数据收录、音频与谱面对齐评分、按难度统计、无数据泄漏的歌曲级划分，以及按难度导出样本。
+- **P3 训练/推理代码：** log-mel 特征 + 音频编码器 + 事件 Transformer、窗口数据集、难度条件、语法约束解码和 checkpoint 推理。
 - **评估：** 起音 F1、位置/类型准确率、时长误差、滑动端点准确率以及难度画像差异。
 - **合成演示：** 不依赖任何受版权保护的音频，即可跑通完整的音频 → maidata 流程。
 
@@ -38,9 +39,9 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 | P0 | 解析器、IR、编译器、校验器、统计、往返测试 | 已完成 |
 | P1 | 音频时间轴前端、规则基线、端到端 CLI | 已完成 |
 | P2 | 数据集收录/对齐/报告/划分/样本、评估 | 已完成 |
-| P3 | 神经音频编码器 + 事件解码器 | 已规划 |
+| P3 | 神经音频编码器 + 事件解码器 | 训练/推理代码已完成；未训练 |
 
-本仓库中没有任何已训练的神经模型检查点。当前的生成器是规则基线：它会跟随检测到的起音/节拍和目标难度画像，但并不理解旋律或谱面风格。
+本仓库中没有任何已训练的神经模型检查点。当前的默认生成器仍是规则基线：它会跟随检测到的起音/节拍和目标难度画像，但并不理解旋律或谱面风格。P3 代码位于 `src/mainote/ml/`，训练方法见 [`docs/TRAINING.md`](docs/TRAINING.md)。
 
 ## 快速开始
 
@@ -117,6 +118,9 @@ mainote dataset ingest <raw_dir> --out <processed_dir> [--align]
 mainote dataset report <processed_dir> [--out report.json] [--csv report.csv]
 mainote dataset split <processed_dir> --out splits.json [--train 0.8 --val 0.1 --test 0.1]
 mainote dataset samples <processed_dir> --out samples_dir [--splits splits.json] [--require-audio]
+mainote ml prepare-features <processed_dir> --out <features_dir>
+mainote ml train --config configs/p3_base.yaml [--resume <checkpoint>] [--dry-run]
+mainote ml infer --checkpoint <best.pt> --audio <song.mp3> -o <maidata.txt>
 ```
 
 ## 架构
@@ -131,7 +135,7 @@ mainote dataset samples <processed_dir> --out samples_dir [--splits splits.json]
   │
   ├─ 生成器
   │    ├─ P1：规则基线                        generate/rule.py
-  │    └─ P3：神经事件解码器                  已规划
+  │    └─ P3：神经事件解码器                  训练/推理代码已就绪
   │
   ├─ 事件 IR                                  maidata/model.py
   │    ├─ tick（每拍 960，4/4 小节 3840）
@@ -188,6 +192,33 @@ data/samples/
 
 同一首歌的所有难度必须留在同一个划分中。切勿按谱面或窗口划分，否则同一段音频会泄漏到训练集和测试集。manifest 记录以下字段：`sample_id`、`chart_index`、`difficulty`、`level_num`、`audio`、`ir`、`first`、`initial_bpm`、`event_count`、`stats`、`alignment_confidence`、`valid` 和 `split`。
 
+## P3 神经模型训练
+
+P3 需要 PyTorch 和 GPU。安装训练依赖：
+
+```bash
+pip install -e '.[audio,train]' -i https://pypi.org/simple
+```
+
+预计算 log-mel 特征，然后训练：
+
+```bash
+python -m mainote ml prepare-features data/processed --out data/features
+python -m mainote ml train --config configs/p3_base.yaml
+```
+
+训练输出在 `runs/p3_base/`，包括 `best.pt`、`last.pt`、`metrics.jsonl`。推理：
+
+```bash
+python -m mainote ml infer \
+  --checkpoint runs/p3_base/best.pt \
+  --audio song.mp3 \
+  --difficulty master --level 12.9 \
+  -o out/p3/maidata.txt
+```
+
+完整的数据准备、训练、推理、评估和故障排查见 [`docs/TRAINING.md`](docs/TRAINING.md)。
+
 ## 项目结构
 
 ```text
@@ -197,7 +228,10 @@ src/mainote/
   generate/     基于规则的谱面生成器
   dataset/      收录、对齐、报告、划分、按难度样本
   eval/         音符级评估指标
+  ml/           P3 tokenizer、特征、数据集、模型、训练、推理
   cli.py        argparse 命令行入口
+configs/        训练配置
+docs/           训练和开发文档
 tests/          标准库 unittest 测试集
 scripts/        演示辅助脚本
 dataset/xxdw/   提交到仓库的 maidata 测试样本（4 张谱面，BPM 143，无音频）
@@ -223,26 +257,27 @@ PYTHONPATH=src python3 -m mainote eval generated.txt reference.txt --index 5
 # 完整测试集（音频测试需要 numpy）
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
-# 仅 P0：会跳过 8 个音频/数据集对齐测试
+# 仅 P0：会跳过 12 个音频/数据集/模型测试
 PYTHONPATH=src python3 -m unittest discover -s tests
 
 # 单个测试
 PYTHONPATH=src python3 -m unittest tests.test_parser.TestTokenSyntax.test_path_chain -v
 ```
 
-测试集目前共有 70 个测试。项目没有单独的 lint/typecheck/CI 配置；`python3 -m compileall -q src tests scripts` 是一个有用的快速检查。
+测试集目前共有 84 个测试。项目没有单独的 lint/typecheck/CI 配置；`python3 -m compileall -q src tests scripts` 是一个有用的快速检查。
 
 ## 路线图
 
 - **P2.5：** 使用真实数据校准难度画像，改进节拍/强拍跟踪，检查低置信度的对齐结果。
-- **P3：** 冻结音频特征（MERT/PaSST）或小型 Conformer、事件 Transformer 解码器、难度条件化、约束解码，以及针对规则基线的训练/评估。需要成对数据和 GPU。
+- **P3：** 训练/推理代码已就绪：log-mel + Transformer 音频编码器、事件解码器、难度条件、语法约束解码、窗口训练和 checkpoint 推理。需要成对数据和 GPU；后续可加入 MERT/PaSST 特征、beam search 和动态 BPM。
 - **P4：** 整曲生成、跨窗口的 Hold/Slide 状态、动态 BPM、Touch/Break/EX、复杂滑动以及候选重排序。
 - **P5：** 预览/编辑器、手动时间轴修正、局部重新生成以及打包。
 
 ## 已知限制
 
-- 当前生成器是**规则基线**，不是学习得到的模型。
-- 时间轴前端假设一首歌使用**恒定 BPM**。
+- 当前默认生成器是**规则基线**，不是学习得到的模型。
+- P3 训练/推理代码已经就绪，但仓库没有训练检查点；需要 GPU 服务器和数据。
+- 时间轴前端假设一首歌使用**恒定 BPM**；P3 推理当前也是恒定 BPM。
 - 节拍/强拍跟踪较为轻量；真实歌曲可能需要 `--bpm`/`--first` 修正。
 - 仓库内置的测试样本没有音频；音频需由用户自行提供。
 - 神经谱面生成需要大量成对的音频/谱面数据和 GPU。仅凭一首歌不足以训练通用模型。
@@ -252,6 +287,7 @@ PYTHONPATH=src python3 -m unittest tests.test_parser.TestTokenSyntax.test_path_c
 - [`MAIDATA_FORMAT.md`](MAIDATA_FORMAT.md) — maidata/simai 格式参考。
 - [`AUDIO_TO_MAIDATA_PLAN.md`](AUDIO_TO_MAIDATA_PLAN.md) — 完整系统的设计计划。部分内容属于愿景；代码和测试才是事实来源。
 - [`data/README.md`](data/README.md) — 数据集布局与质量规则。
+- [`docs/TRAINING.md`](docs/TRAINING.md) — P3 服务端训练、推理、评估和故障排查。
 - [`AGENTS.md`](AGENTS.md) — 面向在本仓库工作的 AI 编码代理的指南。
 
 ## 许可证

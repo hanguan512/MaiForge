@@ -100,6 +100,12 @@ def export_samples(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    for row in prepared.rows:
+        sample_path = (
+            out_dir / row["song_id"] / f"inote_{row['chart_index']}.json"
+        )
+        row["sample"] = str(sample_path.resolve())
+
     manifest_path = out_dir / "manifest.jsonl"
     with manifest_path.open("w", encoding="utf-8") as fh:
         for row in prepared.rows:
@@ -118,7 +124,7 @@ def export_samples(
         }
         song_dir = out_dir / row["song_id"]
         song_dir.mkdir(parents=True, exist_ok=True)
-        sample_path = song_dir / f"inote_{row['chart_index']}.json"
+        sample_path = Path(row["sample"])
         sample_path.write_text(
             json.dumps(sample, ensure_ascii=False, indent=2), encoding="utf-8"
         )

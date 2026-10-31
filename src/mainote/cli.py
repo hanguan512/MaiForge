@@ -122,6 +122,53 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_samples.set_defaults(func=_cmd_dataset_samples)
 
+    p_ml = sub.add_parser("ml", help="P3 neural model feature prep, training, inference")
+    mlsub = p_ml.add_subparsers(dest="ml_command", required=True)
+
+    p_features = mlsub.add_parser("prepare-features", help="precompute log-mel features")
+    p_features.add_argument("processed_dir")
+    p_features.add_argument("--out", required=True, help="features directory")
+    p_features.add_argument("--sr", type=int, default=22050)
+    p_features.add_argument("--n-mels", type=int, default=80)
+    p_features.add_argument("--n-fft", type=int, default=1024)
+    p_features.add_argument("--hop", type=int, default=256)
+    p_features.add_argument("--overwrite", action="store_true")
+    p_features.add_argument("--limit", type=int, default=None)
+    p_features.set_defaults(func=_cmd_ml_prepare)
+
+    p_train = mlsub.add_parser("train", help="train the P3 event model")
+    p_train.add_argument("--config", default="configs/p3_base.yaml")
+    p_train.add_argument("--output-dir", default=None)
+    p_train.add_argument("--resume", default=None)
+    p_train.add_argument("--device", default=None)
+    p_train.add_argument("--seed", type=int, default=None)
+    p_train.add_argument("--num-workers", type=int, default=None)
+    p_train.add_argument("--max-steps", type=int, default=None)
+    p_train.add_argument("--limit-batches", type=int, default=None)
+    p_train.add_argument("--log-every", type=int, default=None)
+    p_train.add_argument("--dry-run", action="store_true")
+    p_train.set_defaults(func=_cmd_ml_train)
+
+    p_infer = mlsub.add_parser("infer", help="generate a chart with a checkpoint")
+    p_infer.add_argument("--checkpoint", required=True)
+    p_infer.add_argument("--audio", required=True)
+    p_infer.add_argument("-o", "--output", required=True, help="maidata.txt output")
+    p_infer.add_argument("--difficulty", default="master")
+    p_infer.add_argument("--level", type=float, default=None)
+    p_infer.add_argument("--timing", default=None)
+    p_infer.add_argument("--features", default=None, help="precomputed .npz features")
+    p_infer.add_argument("--device", default=None)
+    p_infer.add_argument("--window-bars", type=int, default=None)
+    p_infer.add_argument("--stride-bars", type=int, default=None)
+    p_infer.add_argument("--context-bars", type=int, default=None)
+    p_infer.add_argument("--max-new-tokens", type=int, default=2048)
+    p_infer.add_argument("--temperature", type=float, default=0.0)
+    p_infer.add_argument("--top-k", type=int, default=None)
+    p_infer.add_argument("--seed", type=int, default=0)
+    p_infer.add_argument("--title", default=None)
+    p_infer.add_argument("--artist", default=None)
+    p_infer.set_defaults(func=_cmd_ml_infer)
+
     p_demo = sub.add_parser("demo", help="run synthetic click-track demo")
     p_demo.add_argument("--out", default="out/demo")
     p_demo.set_defaults(func=_cmd_demo)
@@ -510,6 +557,67 @@ def _per_chart_rows(processed_dir: Path) -> list[dict]:
                 }
             )
     return rows
+
+
+def _cmd_ml_prepare(args) -> int:
+    from .ml.prepare import prepare_features
+
+    summary = prepare_features(
+        args.processed_dir,
+        args.out,
+        sr=args.sr,
+        n_mels=args.n_mels,
+        n_fft=args.n_fft,
+        hop=args.hop,
+        overwrite=args.overwrite,
+        limit=args.limit,
+        log=print,
+    )
+    print(
+        json.dumps(
+            {
+                "written": summary["written"],
+                "skipped": summary["skipped"],
+                "errors": summary["errors"],
+                "out_dir": summary["out_dir"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if not summary["errors"] else 1
+
+
+def _cmd_ml_train(args) -> int:
+    from .ml.train import train
+
+    return int(train(args) or 0)
+
+
+def _cmd_ml_infer(args) -> int:
+    from .ml.infer import infer
+
+    summary = infer(
+        audio_path=args.audio,
+        checkpoint_path=args.checkpoint,
+        output_path=args.output,
+        difficulty=args.difficulty,
+        level=args.level,
+        timing_path=args.timing,
+        features_path=args.features,
+        device_name=args.device,
+        window_bars=args.window_bars,
+        stride_bars=args.stride_bars,
+        context_bars=args.context_bars,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        top_k=args.top_k,
+        seed=args.seed,
+        title=args.title,
+        artist=args.artist,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _cmd_demo(args) -> int:

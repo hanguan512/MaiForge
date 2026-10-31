@@ -44,6 +44,13 @@ self-contained `inote_N.json` per chart, `summary.json`, and `splits.json`.
 The audio is referenced by path rather than copied, and all difficulties of a
 song share the same split.
 
+For P3 training, precompute log-mel features (one `.npz` per song):
+
+```bash
+PYTHONPATH=src .venv/bin/python -m mainote ml prepare-features \
+  data/processed --out data/features
+```
+
 ## Quality rules
 
 - Audio and maidata must be the **same edit/version**.  Check duration, BPM,
