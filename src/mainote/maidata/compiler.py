@@ -42,9 +42,14 @@ def compile_maidata(maidata: Maidata, *, trailing_newline: bool = True) -> str:
     for key, value in global_meta:
         lines.append(f"&{key}={value}")
 
-    for chart in sorted(maidata.charts, key=lambda c: c.index):
-        lines.append("")
+    charts = sorted(maidata.charts, key=lambda c: c.index)
+    # Group all difficulty metadata before the chart bodies.  Both layouts are
+    # valid simai, but this matches official/converter output more closely and
+    # is friendlier to simple readers.
+    for chart in charts:
         lines.extend(_compile_chart_metadata(chart, global_first))
+    for chart in charts:
+        lines.append("")
         lines.append(f"&inote_{chart.index}={compile_chart_body(chart)}")
 
     text = "\n".join(lines).rstrip()

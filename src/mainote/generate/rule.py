@@ -26,6 +26,18 @@ from ..maidata.stats import DIFFICULTY_BY_INDEX, profile_for_difficulty
 from ..maidata.validate import validate_chart
 
 DIFFICULTY_RULES: dict[str, dict[str, Any]] = {
+    "easy": {
+        "grid": 4,
+        "max_simultaneous": 2,
+        "hold_prob": 0.06,
+        "slide_prob": 0.0,
+        "touch_prob": 0.0,
+        "break_prob": 0.0,
+        "ex_prob": 0.0,
+        "each_prob": 0.02,
+        "min_gap_beats": 1.0,
+        "slide_shapes": ["-"],
+    },
     "basic": {
         "grid": 4,
         "max_simultaneous": 2,
@@ -127,7 +139,7 @@ class RuleConfig:
     ex_prob: float | None = None
     each_prob: float | None = None
     min_gap_beats: float | None = None
-    designer: str = "mainote-rule"
+    designer: str = "mainote"
 
 
 @dataclass
@@ -191,7 +203,8 @@ def generate_chart(
     tick_density = float(base["target_density"]) / max(1.0, avg_notes_per_tick)
 
     candidates = _candidate_ticks(timing, grid_ticks, tick_density)
-    effective_duration = max(0.0, timing.duration - timing.first)
+    musical_start, musical_end = _musical_span(timing)
+    effective_duration = max(0.0, musical_end - musical_start)
     selected = _select_ticks(
         candidates,
         target_density=tick_density,
@@ -324,9 +337,7 @@ def generate_chart(
     events.sort(key=lambda e: e.sort_key())
     events = _repair_events(events, grid_ticks)
 
-    end_tick = _round_up_bar(
-        max([e.end_tick() for e in events] + [timing.tick_at(timing.duration) or 0])
-    )
+    end_tick = _round_up_bar(max((e.end_tick() for e in events), default=0))
     title = title or timing.tags.get("title") or "untitled"
     artist = artist or timing.tags.get("artist") or ""
     chart = Chart(
@@ -357,6 +368,13 @@ def generate_chart(
     )
 
 
+def _musical_span(timing: TimingInfo) -> tuple[float, float]:
+    """First/last musical onset, ignoring long silent intros and outros."""
+    if timing.onset_times:
+        return min(timing.onset_times), max(timing.onset_times)
+    return max(0.0, timing.first), timing.duration
+
+
 def _candidate_ticks(
     timing: TimingInfo,
     grid_ticks: int,
@@ -364,32 +382,38 @@ def _candidate_ticks(
 ) -> dict[int, float]:
     """Map tick -> onset strength, with beats/downbeats and a weak grid floor."""
     candidates: dict[int, float] = {}
+    span_start, span_end = _musical_span(timing)
+    tail_seconds = max(0.5, 2.0 * 60.0 / max(timing.bpm, 1e-6))
+    span_end = min(timing.duration, span_end + tail_seconds)
+    start_tick = timing.tick_at(span_start, quantize=grid_ticks)
+    end_tick = timing.tick_at(span_end, quantize=grid_ticks)
+    if start_tick is None:
+        start_tick = 0
+    if end_tick is None:
+        end_tick = timing.tick_at(timing.duration, quantize=grid_ticks) or start_tick
+    start_tick = max(0, start_tick)
+    end_tick = max(start_tick, end_tick)
+
     for t, s in zip(timing.onset_times, timing.onset_strengths):
         tick = timing.tick_at(t, quantize=grid_ticks)
-        if tick is None:
+        if tick is None or tick < start_tick or tick > end_tick:
             continue
         candidates[tick] = max(candidates.get(tick, 0.0), float(s))
     for t in timing.beat_times:
         tick = timing.tick_at(t, quantize=grid_ticks)
-        if tick is None:
+        if tick is None or tick < start_tick or tick > end_tick:
             continue
-        candidates[tick] = max(candidates.get(tick, 0.0), 0.55)
+        candidates[tick] = max(candidates.get(tick, 0.0), 0.40)
     for t in timing.downbeat_times:
         tick = timing.tick_at(t, quantize=grid_ticks)
-        if tick is None:
+        if tick is None or tick < start_tick or tick > end_tick:
             continue
-        candidates[tick] = max(candidates.get(tick, 0.0), 0.75)
+        candidates[tick] = max(candidates.get(tick, 0.0), 0.60)
 
-    if candidates:
-        start = max(0, min(candidates) - grid_ticks * 2)
-        end = max(candidates) + grid_ticks * 2
-    else:
-        start = 0
-        end = timing.tick_at(timing.duration, quantize=grid_ticks) or 0
     # A weak floor lets the selector fill the target density even when the
     # onset detector is conservative.  Musical onsets still win the greedy pass.
-    for tick in range(start, end + 1, grid_ticks):
-        candidates.setdefault(tick, 0.05)
+    for tick in range(start_tick, end_tick + 1, grid_ticks):
+        candidates.setdefault(tick, 0.03)
     return candidates
 
 

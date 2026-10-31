@@ -49,15 +49,20 @@ def maidata_for_chart(
     title: str,
     artist: str = "",
     wholebpm: float | None = None,
-    clock_count: int = 4,
+    clock_count: int | None = None,
 ) -> Maidata:
+    # Keep the generated metadata minimal: title/artist/BPM are enough to load
+    # the chart.  Emit &first only when it is non-zero and &clock_count only
+    # when explicitly requested, matching common maidata files.
     meta = [
         ("title", title),
         ("artist", artist),
-        ("first", _fmt(chart.first)),
         ("wholebpm", _fmt(wholebpm if wholebpm is not None else chart.initial_bpm)),
-        ("clock_count", str(clock_count)),
     ]
+    if abs(chart.first) > 1e-9:
+        meta.insert(2, ("first", _fmt(chart.first)))
+    if clock_count is not None:
+        meta.append(("clock_count", str(clock_count)))
     return Maidata(metadata_items=meta, charts=[chart])
 
 
