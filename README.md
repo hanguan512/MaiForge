@@ -75,7 +75,23 @@ Ingest and report:
 PYTHONPATH=src .venv/bin/python -m mainote dataset ingest data/raw --out data/processed --align
 PYTHONPATH=src .venv/bin/python -m mainote dataset report data/processed --out out/dataset_report.json
 PYTHONPATH=src .venv/bin/python -m mainote dataset split data/processed --out out/splits.json
+PYTHONPATH=src .venv/bin/python -m mainote dataset samples data/processed \
+  --out data/samples --splits out/splits.json --require-audio
 ```
+
+The `samples` command keeps one IR per song but writes one self-contained
+training sample per difficulty:
+
+```text
+data/samples/
+  manifest.jsonl          # one row per (song_id, inote_N)
+  summary.json
+  splits.json
+  <song_id>/
+    inote_1.json ... inote_5.json
+```
+
+Splitting is by song; all difficulties of a song stay in the same split.
 
 ## Design notes
 

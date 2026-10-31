@@ -28,14 +28,21 @@ data/processed/<song_id>/
 
 And a dataset-level `data/processed/ingest_summary.json`.
 
-Report and split:
+Report, split, and per-difficulty sample export:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m mainote dataset report data/processed \
   --out out/dataset_report.json --csv out/dataset_report.csv
 PYTHONPATH=src .venv/bin/python -m mainote dataset split data/processed \
   --out out/splits.json --train 0.8 --val 0.1 --test 0.1 --seed 0
+PYTHONPATH=src .venv/bin/python -m mainote dataset samples data/processed \
+  --out data/samples --splits out/splits.json --require-audio
 ```
+
+`dataset samples` writes `manifest.jsonl` (one row per difficulty), one
+self-contained `inote_N.json` per chart, `summary.json`, and `splits.json`.
+The audio is referenced by path rather than copied, and all difficulties of a
+song share the same split.
 
 ## Quality rules
 

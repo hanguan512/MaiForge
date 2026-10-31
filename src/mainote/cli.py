@@ -105,6 +105,23 @@ def main(argv: list[str] | None = None) -> int:
     p_split.add_argument("--seed", type=int, default=0)
     p_split.set_defaults(func=_cmd_dataset_split)
 
+    p_samples = dsub.add_parser(
+        "samples", help="export one training sample per difficulty"
+    )
+    p_samples.add_argument("processed_dir")
+    p_samples.add_argument("--out", required=True, help="sample output directory")
+    p_samples.add_argument("--splits", default=None, help="reuse an existing splits.json")
+    p_samples.add_argument("--train", type=float, default=0.8)
+    p_samples.add_argument("--val", type=float, default=0.1)
+    p_samples.add_argument("--test", type=float, default=0.1)
+    p_samples.add_argument("--seed", type=int, default=0)
+    p_samples.add_argument(
+        "--require-audio",
+        action="store_true",
+        help="skip songs that have no audio (recommended for audio-to-chart training)",
+    )
+    p_samples.set_defaults(func=_cmd_dataset_samples)
+
     p_demo = sub.add_parser("demo", help="run synthetic click-track demo")
     p_demo.add_argument("--out", default="out/demo")
     p_demo.set_defaults(func=_cmd_demo)
@@ -445,6 +462,24 @@ def _cmd_dataset_split(args) -> int:
         f"val={result['counts']['val']} test={result['counts']['test']}"
     )
     print(f"wrote splits: {path}")
+    return 0
+
+
+def _cmd_dataset_samples(args) -> int:
+    from .dataset.samples import export_samples
+
+    summary = export_samples(
+        args.processed_dir,
+        args.out,
+        splits=args.splits,
+        seed=args.seed,
+        train=args.train,
+        val=args.val,
+        test=args.test,
+        require_audio=args.require_audio,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(f"wrote samples: {Path(args.out).resolve()}")
     return 0
 
 
