@@ -36,7 +36,8 @@ TIME_UNIT = 20
 UNITS_PER_BAR = TICKS_PER_BAR // TIME_UNIT  # 192
 DUR_UNIT = TICKS_PER_BEAT // 48            # 1/48 beat = 20 ticks
 MAX_DUR_UNITS = 2048
-MAX_LEVEL_BUCKET = 30
+# level_bucket = round(level * 2); bucket 31 represents 15.5 (15+).
+MAX_LEVEL_BUCKET = 31
 
 TYPE_TOKENS = {
     "tap": "TAP",

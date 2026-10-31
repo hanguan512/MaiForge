@@ -76,8 +76,10 @@ class TestTokenizer(unittest.TestCase):
     def test_level_bucket(self):
         self.assertEqual(level_bucket(12.9), 26)
         self.assertEqual(level_bucket("12+"), 25)
+        self.assertEqual(level_bucket("15+"), 31)
+        self.assertEqual(level_bucket(15.5), 31)
         self.assertEqual(level_bucket(None), 0)
-        self.assertEqual(level_bucket(99), 30)
+        self.assertEqual(level_bucket(99), 31)
 
     def test_grammar_allows_expected_prefix(self):
         vocab = ChartVocabulary.default()

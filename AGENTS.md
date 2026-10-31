@@ -1,9 +1,9 @@
 # AGENTS.md
 
 ## What this repo is
-- Audio → event IR → **maidata** (simai/maimai DX) toolkit. P0/P1/P2 are implemented. P3 training/inference code exists in `src/mainote/ml/`, but no checkpoint is trained or shipped.
+- Audio → event IR → **maidata** (simai/maimai DX) toolkit. P0/P1/P2 are implemented. P3 v0 training/inference code exists in `src/mainote/ml/`, but no checkpoint is trained or shipped. P3 v0 is greedy decode, constant BPM, no cross-window Hold/Slide state, token cross-entropy only.
 - Core invariant: generators produce `Event` IR; `src/mainote/maidata/compiler.py` owns all maidata formatting (`{n}`, commas, `[a:b]`, `E`). Do not generate raw maidata text directly.
-- `MAIDATA_FORMAT.md` is the format reference. `AUDIO_TO_MAIDATA_PLAN.md` is a design plan and is stale in places (it says 384 ticks/bar; code uses 960 ticks/beat and 3840 ticks/bar). Trust code and tests.
+- `MAIDATA_FORMAT.md` is the format reference. `AUDIO_TO_MAIDATA_PLAN.md` is the design plan and now uses the code's canonical units (960 ticks/beat, 3840 ticks/bar). Trust code and tests when they disagree.
 - P3 workflow is documented in `docs/TRAINING.md`; training must run on a GPU server, not in this CPU-only workspace.
 
 ## Commands
@@ -25,7 +25,7 @@
 - `src/mainote/generate/rule.py`: hand-tuned rule baseline; `DIFFICULTY_RULES` and `LEVEL_DENSITY_ANCHORS` are priors, not learned truth.
 - `src/mainote/dataset/`: `ingest`, `align`, `report`, `split`, `samples`.
 - `src/mainote/eval/metrics.py`: note-level comparison (onset F1, position/type, duration, slide endpoints).
-- `src/mainote/ml/`: P3 tokenizer, log-mel features, window dataset, model, train loop, greedy grammar decoder, inference.
+- `src/mainote/ml/`: P3 v0 tokenizer, log-mel features, window dataset, model, train loop, greedy grammar decoder, inference. No auxiliary losses or candidate reranking yet.
 - `configs/p3_base.yaml`: base training config.
 - `docs/TRAINING.md`: server data prep, training, inference, evaluation, troubleshooting.
 - `tests/`: stdlib `unittest`, not pytest.
@@ -49,4 +49,6 @@
 - The committed `dataset/xxdw/maidata` is the only fixture: 4 charts, BPM 143, no audio. Use it for parser/compiler goldens.
 - `out/`, `data/raw/`, `data/processed/`, `data/features/`, `data/samples/`, `runs/`, `assets/synthetic/`, `.venv/`, and audio files are gitignored. `audio-FM/` is local user audio; never commit it.
 - The current machine has no GPU and there is no training checkpoint. Do not claim a trained neural model exists.
+- P3 tokenizer uses 20-tick units (1/48 beat, 192 per 4/4 bar); IR ticks must be multiples of 20 for lossless tokenization. `MAX_LEVEL_BUCKET=31` represents 15.5 (`15+`); levels above 15.5 clamp to that bucket.
+- Difficulty priors are not calibrated: `LEVEL_DENSITY_ANCHORS` ends at 15.0 and `profile_for_difficulty` clamps density to per-difficulty bands, so master/remaster saturate. Do not promise 13–15/15+ fidelity until P2.5 calibration.
 - If real-song BPM/downbeat is wrong: `analyze --bpm N --first S`, then `generate --timing timing.json`.

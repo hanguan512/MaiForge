@@ -59,4 +59,8 @@ PYTHONPATH=src .venv/bin/python -m mainote ml prepare-features \
   artist/BPM/genre for generalization tests).
 - Low-confidence alignments (< 0.5) should be manually checked or excluded
   before training.
+- P3 training data must explicitly cover **13 / 14 / 15 / 15+**. Do not claim
+  high-level support from a dataset whose maximum is 12.9.
+- Treat 100 songs × 4–5 difficulties as the PoC gate, and 300+ songs / 1200+
+  charts as the v0 target.
 - Keep copyrighted audio local; document sources and licenses.

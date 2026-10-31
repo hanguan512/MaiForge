@@ -11,14 +11,18 @@
 - 窗口数据集、按歌划分、SpecAugment。
 - 音频编码器：Conv1d 前端 + Transformer encoder。
 - 事件解码器：decoder-only Transformer + 对音频的 cross-attention。
-- 难度条件：序列前缀 `DIFF_n`、`LEVEL_k`。
+- 难度条件：序列前缀 `DIFF_n`、`LEVEL_k`（`15+` 映射到 bucket 31）。
 - 训练循环：AdamW、warmup + cosine、AMP、梯度累积、checkpoint、resume、
   验证、early stop、JSONL metrics。
 - 语法约束的贪婪推理，输出并编译为 `maidata.txt`。
 - 通过 `mainote eval` 做音符级评估（onset F1、位置/类型、时长、Slide 终点）。
 
-尚未实现：MERT/PaSST 预训练特征、beam search、动态 BPM 推理、跨窗口
-Hold/Slide 活跃状态、分布式训练。
+尚未实现：MERT/PaSST 预训练特征、辅助损失（onset / duration / 难度画像）、beam
+search 或候选重排、动态 BPM 推理、跨窗口 Hold/Slide 活跃状态、分布式训练。
+当前训练只使用 token 交叉熵。
+
+> 阶段编号采用仓库现状（P2 = 数据集/评估，P3 = 神经模型），与设计计划早期版本的
+> P2/P3 划分不同。
 
 ## 2. 服务器环境
 
@@ -140,6 +144,8 @@ epoch_NNN.pt       # 每 save_every 个 epoch
 - `train_loss` / `val_loss` 应该下降；train 降、val 升时增加数据或增强正则。
 - token accuracy 只是参考，不等于谱面质量；最终要看 `mainote eval` 和试听。
 - 规则 baseline 仍然是对照组：只学会密度的模型并不算更好。
+- v0 只用 token 交叉熵训练，`DIFF_n` / `LEVEL_k` 前缀不能保证目标密度或音符类型
+  比例；请在生成后用 `mainote stats` 检查，后续应加入 `L_level` 辅助损失。
 
 ## 5. 推理
 
@@ -215,6 +221,9 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 
 - 100 首歌 × 4–5 个难度是合理的首个 PoC。
 - 300+ 首歌 / 1200+ 张谱是更可用的 v0。
+- **必须覆盖 13、14、15、15+。** 没有高难度谱面，规则基线和 P3 都学不到高难度
+  长什么样；不要用 ≤12.9 的数据声称支持 13–15/15+。
+- 把上述规模当作硬性门槛：PoC 数据不达标就不要启动 P3 训练。
 - 比数量更重要的是：音频版本正确、`first`/BPM 正确、谱师/风格多样、
   难度均衡、对齐噪声低。
 - `alignment_confidence < 0.5` 的样本应人工检查或剔除。
@@ -224,6 +233,25 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 
 - 推理目前是恒定 BPM（训练特征使用谱面 tempo map）。
 - 还没有 MERT/PaSST 预训练音频编码器。
-- 还没有 beam search / candidate reranking。
+- 还没有 beam search / candidate reranking；解码只有 greedy。
 - 跨窗口的 Hold/Slide 活跃状态尚未传入模型，长音符可能被截断。
+- 训练损失只有 token 交叉熵，还没有 onset / duration / `L_level` 辅助损失。
+- 输入只有 80-bin log-mel；还没有 onset/beat/downbeat 辅助特征或节拍同步池化。
+- 数据增强目前只有 SpecAugment；EQ、噪声、混响、时间拉伸等尚未实现。
+- tokenizer 支持到 15+（bucket 31）；16.0 以上会 clamp 到 15+。
+- 难度先验还没有用真实数据校准，高等级即使训练后也可能达不到目标密度/复杂度。
 - 本仓库没有训练好的 `best.pt`；必须在 GPU 服务器上运行训练后才会产生。
+
+## 11. Go/No-Go 检查清单
+
+在把默认生成器从规则 baseline 切换为 P3 之前，逐项确认：
+
+- [ ] 生成的谱面 100% 可编译、可重新解析。
+- [ ] 非法事件为 0；自动修复事件 < 2%。
+- [ ] 在留出歌曲上，onset F1、位置/类型准确率不低于规则 baseline。
+- [ ] notes/s、最大同时音、类型比例落在目标难度的训练集分位区间。
+- [ ] 测试集包含 13 / 14 / 15 / 15+ 谱面。
+- [ ] 人工盲评中，P3 相对规则 baseline 的胜率 > 50%。
+- [ ] 跨窗口长音符截断率和重复率已经统计并在可接受范围。
+
+任何一项不满足，就继续把 `mainote generate`（规则 baseline）作为默认生成器。
