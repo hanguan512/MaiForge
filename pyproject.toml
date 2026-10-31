@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mainote"
 version = "0.1.0"
-description = "Audio-to-maidata chart generation toolkit (parser, IR, compiler, baseline generator)"
+description = "MaiForge: audio-to-maidata chart generation for maimai DX/simai"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
