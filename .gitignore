@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+.uv-cache/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Generated / local data
+data/raw/
+data/processed/
+assets/synthetic/
+out/
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.opus

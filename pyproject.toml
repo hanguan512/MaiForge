@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mainote"
+version = "0.1.0"
+description = "Audio-to-maidata chart generation toolkit (parser, IR, compiler, baseline generator)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+audio = [
+  "numpy>=1.26",
+  "mutagen>=1.47",
+]
+dev = ["pytest>=8"]
+
+[project.scripts]
+mainote = "mainote.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

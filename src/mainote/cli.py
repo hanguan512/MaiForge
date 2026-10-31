@@ -1,0 +1,489 @@
+"""Command-line interface for mainote."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+from pathlib import Path
+
+from . import __version__
+from .maidata.compiler import compile_maidata
+from .maidata.model import Maidata
+from .maidata.parser import parse_file
+from .maidata.stats import chart_stats, maidata_stats
+from .maidata.validate import validate_maidata
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="mainote",
+        description="Audio -> chart IR -> maidata toolkit",
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_parse = sub.add_parser("parse", help="parse maidata into IR JSON")
+    p_parse.add_argument("maidata")
+    p_parse.add_argument("--json", dest="json_out", help="write full IR JSON here")
+    p_parse.set_defaults(func=_cmd_parse)
+
+    p_compile = sub.add_parser("compile", help="compile IR JSON to maidata")
+    p_compile.add_argument("ir")
+    p_compile.add_argument("-o", "--out", required=True)
+    p_compile.set_defaults(func=_cmd_compile)
+
+    p_validate = sub.add_parser("validate", help="validate maidata or IR JSON")
+    p_validate.add_argument("input")
+    p_validate.add_argument("--json", action="store_true", help="print JSON report")
+    p_validate.set_defaults(func=_cmd_validate)
+
+    p_stats = sub.add_parser("stats", help="print chart statistics")
+    p_stats.add_argument("input")
+    p_stats.add_argument("--json", action="store_true", help="print JSON")
+    p_stats.set_defaults(func=_cmd_stats)
+
+    p_rt = sub.add_parser("roundtrip", help="IR -> maidata -> IR consistency check")
+    p_rt.add_argument("maidata")
+    p_rt.add_argument("--out", help="write the recompiled maidata here")
+    p_rt.set_defaults(func=_cmd_roundtrip)
+
+    p_eval = sub.add_parser("eval", help="compare a generated chart with a reference")
+    p_eval.add_argument("generated")
+    p_eval.add_argument("reference")
+    p_eval.add_argument("--index", type=int, default=None, help="difficulty index (2..6)")
+    p_eval.add_argument("--tolerance", type=float, default=0.06, help="time tolerance in seconds")
+    p_eval.add_argument("--json", action="store_true", help="print JSON")
+    p_eval.set_defaults(func=_cmd_eval)
+
+    p_analyze = sub.add_parser("analyze", help="analyze audio timing")
+    p_analyze.add_argument("audio")
+    p_analyze.add_argument("--out", required=True, help="timing JSON output")
+    p_analyze.add_argument("--sr", type=int, default=22050)
+    p_analyze.add_argument("--bpm", type=float, default=None, help="override estimated BPM")
+    p_analyze.add_argument("--first", type=float, default=None, help="chart start offset in seconds")
+    p_analyze.set_defaults(func=_cmd_analyze)
+
+    p_gen = sub.add_parser("generate", help="generate a chart from audio")
+    p_gen.add_argument("audio")
+    p_gen.add_argument("-o", "--out", required=True, help="maidata output")
+    p_gen.add_argument("--difficulty", default="master")
+    p_gen.add_argument("--level", type=float, default=None)
+    p_gen.add_argument("--seed", type=int, default=0)
+    p_gen.add_argument("--sr", type=int, default=22050)
+    p_gen.add_argument("--timing", help="use an existing timing JSON")
+    p_gen.add_argument("--bpm", type=float, default=None, help="override timing BPM")
+    p_gen.add_argument("--first", type=float, default=None, help="override chart start offset")
+    p_gen.add_argument("--title", default=None)
+    p_gen.add_argument("--artist", default=None)
+    p_gen.add_argument("--ir", dest="ir_out", default=None, help="write IR JSON")
+    p_gen.add_argument("--stats", dest="stats_out", default=None, help="write stats JSON")
+    p_gen.set_defaults(func=_cmd_generate)
+
+    p_dataset = sub.add_parser("dataset", help="dataset ingestion and reports")
+    dsub = p_dataset.add_subparsers(dest="dataset_command", required=True)
+    p_ingest = dsub.add_parser("ingest", help="scan raw song folders")
+    p_ingest.add_argument("raw_dir")
+    p_ingest.add_argument("--out", required=True, help="processed directory")
+    p_ingest.add_argument("--align", action="store_true", help="run audio alignment scoring")
+    p_ingest.add_argument("--sr", type=int, default=22050)
+    p_ingest.set_defaults(func=_cmd_dataset_ingest)
+
+    p_report = dsub.add_parser("report", help="aggregate processed metadata")
+    p_report.add_argument("processed_dir")
+    p_report.add_argument("--out", default=None, help="write report JSON")
+    p_report.add_argument("--csv", default=None, help="write per-chart CSV")
+    p_report.set_defaults(func=_cmd_dataset_report)
+
+    p_split = dsub.add_parser("split", help="create leakage-safe splits by song")
+    p_split.add_argument("processed_dir")
+    p_split.add_argument("--out", required=True, help="write split JSON")
+    p_split.add_argument("--train", type=float, default=0.8)
+    p_split.add_argument("--val", type=float, default=0.1)
+    p_split.add_argument("--test", type=float, default=0.1)
+    p_split.add_argument("--seed", type=int, default=0)
+    p_split.set_defaults(func=_cmd_dataset_split)
+
+    p_demo = sub.add_parser("demo", help="run synthetic click-track demo")
+    p_demo.add_argument("--out", default="out/demo")
+    p_demo.set_defaults(func=_cmd_demo)
+
+    args = parser.parse_args(argv)
+    try:
+        return int(args.func(args) or 0)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _load_any(path: str) -> Maidata:
+    raw = Path(path).read_text(encoding="utf-8")
+    if raw.lstrip().startswith("{"):
+        return Maidata.from_dict(json.loads(raw))
+    return parse_file(path)
+
+
+def _cmd_parse(args) -> int:
+    maidata = parse_file(args.maidata)
+    if args.json_out:
+        out = Path(args.json_out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(maidata.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"wrote IR: {out}")
+    else:
+        print(f"title: {maidata.get('title', '')}")
+        print(f"artist: {maidata.get('artist', '')}")
+        print(f"charts: {len(maidata.charts)}")
+        for chart in maidata.charts:
+            print(
+                f"  inote_{chart.index}: level={chart.level or '-'} "
+                f"notes={chart.note_count} bpm={chart.initial_bpm:g} "
+                f"end_tick={chart.end_tick}"
+            )
+    for warning in maidata.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    return 0
+
+
+def _cmd_compile(args) -> int:
+    maidata = _load_any(args.ir)
+    text = compile_maidata(maidata)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(f"wrote maidata: {out} ({len(text)} bytes)")
+    return 0
+
+
+def _cmd_validate(args) -> int:
+    maidata = _load_any(args.input)
+    report = validate_maidata(maidata)
+    if args.json:
+        print(
+            json.dumps(
+                {"ok": report.ok, "errors": report.errors, "warnings": report.warnings},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        if report.ok:
+            print("OK: no validation errors")
+        else:
+            for error in report.errors:
+                print(f"error: {error}")
+        for warning in report.warnings:
+            print(f"warning: {warning}")
+        print(
+            f"summary: {len(report.errors)} error(s), "
+            f"{len(report.warnings)} warning(s)"
+        )
+    return 0 if report.ok else 1
+
+
+def _cmd_stats(args) -> int:
+    maidata = _load_any(args.input)
+    data = maidata_stats(maidata)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+    print(f"{data['title']} / {data['artist']}")
+    for chart in data["charts"]:
+        print(
+            f"inote_{chart['index']} {chart['difficulty']:<8} "
+            f"lv={chart['level'] or '-':<4} "
+            f"notes={chart['notes_total']:<4} "
+            f"n/s={chart['notes_per_second']:<5} "
+            f"dur={chart['duration_seconds']:<7} "
+            f"max_sim={chart['max_simultaneous']:<2} "
+            f"touch={chart['touch_count']:<3} "
+            f"div={chart['finest_division']}"
+        )
+    return 0
+
+
+def _cmd_roundtrip(args) -> int:
+    maidata = parse_file(args.maidata)
+    text = compile_maidata(maidata)
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        print(f"wrote recompiled maidata: {out}")
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+        tmp.write(text)
+        tmp_path = tmp.name
+    try:
+        maidata2 = parse_file(tmp_path)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    ok = maidata.signature() == maidata2.signature()
+    if ok:
+        print(
+            f"OK: round-trip preserved {len(maidata.charts)} chart(s), "
+            f"{sum(c.note_count for c in maidata.charts)} event(s)"
+        )
+        return 0
+    print("FAIL: semantic IR changed after round-trip", file=sys.stderr)
+    for a, b in zip(maidata.charts, maidata2.charts):
+        if a.signature() != b.signature():
+            print(f"  first differing chart: inote_{a.index}", file=sys.stderr)
+            break
+    return 1
+
+
+def _cmd_eval(args) -> int:
+    from .eval.metrics import evaluate_chart
+
+    generated = _load_any(args.generated)
+    reference = _load_any(args.reference)
+    index = args.index
+    if index is None:
+        if len(generated.charts) == 1:
+            index = generated.charts[0].index
+        elif len(reference.charts) == 1:
+            index = reference.charts[0].index
+        elif generated.chart(5) and reference.chart(5):
+            index = 5
+        else:
+            raise ValueError("multiple charts; pass --index")
+    pred = generated.chart(index)
+    ref = reference.chart(index)
+    if pred is None or ref is None:
+        raise ValueError(f"missing inote_{index} in one of the files")
+    result = evaluate_chart(pred, ref, tolerance_seconds=args.tolerance)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    counts = result["counts"]
+    onset = result["onset"]
+    print(
+        f"inote_{index}: matched {counts['matched']} / "
+        f"ref {counts['reference']} / pred {counts['predicted']}"
+    )
+    print(
+        f"onset F1={onset['f1']:.4f} "
+        f"P={onset['precision']:.4f} R={onset['recall']:.4f} "
+        f"mean_err={onset['mean_time_error_ms']:.1f}ms"
+    )
+    print(
+        f"position={result['position_accuracy']:.4f} "
+        f"type={result['type_accuracy']:.4f} "
+        f"exact={result['exact_accuracy']:.4f}"
+    )
+    if result["duration_mae_ticks"] is not None:
+        print(f"duration MAE={result['duration_mae_ticks']:.2f} ticks")
+    if result["slide"]["endpoint_accuracy"] is not None:
+        print(
+            f"slide endpoint={result['slide']['endpoint_accuracy']:.4f} "
+            f"({result['slide']['matched']} matched)"
+        )
+    stats = result["stats"]
+    print(
+        f"notes/s ref={stats['notes_per_second']['reference']:.3f} "
+        f"pred={stats['notes_per_second']['predicted']:.3f} "
+        f"max_sim ref={stats['max_simultaneous']['reference']} "
+        f"pred={stats['max_simultaneous']['predicted']}"
+    )
+    return 0
+
+
+def _cmd_analyze(args) -> int:
+    from .audio.features import analyze_audio
+
+    timing = analyze_audio(
+        args.audio,
+        sr=args.sr,
+        bpm=args.bpm,
+        first=args.first if args.first is not None else 0.0,
+    )
+    timing.save(args.out)
+    print(
+        f"bpm={timing.bpm:.3f} (confidence {timing.bpm_confidence:.3f}) "
+        f"duration={timing.duration:.2f}s beats={len(timing.beat_times)} "
+        f"downbeats={len(timing.downbeat_times)} onsets={len(timing.onset_times)}"
+    )
+    print(f"wrote timing: {args.out}")
+    return 0
+
+
+def _cmd_generate(args) -> int:
+    from .audio.timing import TimingInfo
+    from .generate import generate_chart, maidata_for_chart
+
+    if args.timing:
+        timing = TimingInfo.load(args.timing)
+        if args.first is not None:
+            timing.first = float(args.first)
+        if args.bpm is not None:
+            timing.retime(float(args.bpm))
+        result = generate_chart(
+            timing,
+            difficulty=args.difficulty,
+            level=args.level,
+            seed=args.seed,
+            title=args.title,
+            artist=args.artist,
+        )
+    else:
+        from .generate import generate_from_audio
+
+        timing, result = generate_from_audio(
+            args.audio,
+            difficulty=args.difficulty,
+            level=args.level,
+            seed=args.seed,
+            sr=args.sr,
+            title=args.title,
+            artist=args.artist,
+            bpm=args.bpm,
+            first=args.first if args.first is not None else 0.0,
+        )
+    chart = result.chart
+    maidata = maidata_for_chart(
+        chart,
+        title=args.title or timing.tags.get("title") or Path(args.audio).stem,
+        artist=args.artist or timing.tags.get("artist") or "",
+        wholebpm=timing.bpm,
+    )
+    text = compile_maidata(maidata)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    if args.ir_out:
+        path = Path(args.ir_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(maidata.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    stats = chart_stats(chart)
+    if args.stats_out:
+        path = Path(args.stats_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    print(
+        f"bpm={timing.bpm:.3f} duration={timing.duration:.1f}s "
+        f"notes={stats['notes_total']} n/s={stats['notes_per_second']:.2f} "
+        f"max_sim={stats['max_simultaneous']}"
+    )
+    print(f"wrote maidata: {out}")
+    for warning in result.warnings[:10]:
+        print(f"warning: {warning}", file=sys.stderr)
+    return 0
+
+
+def _cmd_dataset_ingest(args) -> int:
+    from .dataset.ingest import ingest_dataset
+
+    result = ingest_dataset(
+        args.raw_dir,
+        args.out,
+        align=args.align,
+        sr=args.sr,
+        log=print,
+    )
+    print(
+        f"songs={len(result.records)} warnings={len(result.warnings)} "
+        f"errors={len(result.errors)}"
+    )
+    for error in result.errors[:20]:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if result.errors else 0
+
+
+def _cmd_dataset_report(args) -> int:
+    from .dataset.report import report_dataset
+
+    report = report_dataset(args.processed_dir)
+    if args.out:
+        path = Path(args.out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"wrote report: {path}")
+    else:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+
+    if args.csv:
+        rows = _per_chart_rows(Path(args.processed_dir))
+        path = Path(args.csv)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if rows:
+            with path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+            print(f"wrote CSV: {path}")
+    return 0
+
+
+def _cmd_dataset_split(args) -> int:
+    from .dataset.split import split_dataset
+
+    result = split_dataset(
+        args.processed_dir,
+        train=args.train,
+        val=args.val,
+        test=args.test,
+        seed=args.seed,
+    )
+    path = Path(args.out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(
+        f"train={result['counts']['train']} "
+        f"val={result['counts']['val']} test={result['counts']['test']}"
+    )
+    print(f"wrote splits: {path}")
+    return 0
+
+
+def _per_chart_rows(processed_dir: Path) -> list[dict]:
+    rows = []
+    for meta_path in sorted(processed_dir.glob("*/meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for chart in meta.get("charts", []):
+            alignment = chart.get("alignment") or {}
+            rows.append(
+                {
+                    "song_id": meta.get("song_id"),
+                    "title": meta.get("title"),
+                    "index": chart.get("index"),
+                    "difficulty": chart.get("difficulty"),
+                    "level": chart.get("level"),
+                    "notes": chart.get("notes_total"),
+                    "notes_per_second": chart.get("notes_per_second"),
+                    "duration_seconds": chart.get("duration_seconds"),
+                    "max_simultaneous": chart.get("max_simultaneous"),
+                    "touch_ratio": chart.get("touch_ratio"),
+                    "finest_division": chart.get("finest_division"),
+                    "alignment_confidence": alignment.get("confidence"),
+                    "alignment_offset": alignment.get("best_offset_seconds"),
+                }
+            )
+    return rows
+
+
+def _cmd_demo(args) -> int:
+    from .demo import run_demo
+
+    summary = run_demo(args.out)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
