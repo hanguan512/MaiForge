@@ -93,6 +93,25 @@ TRACK_FLAG_TOKENS = {
 TRACK_FLAG_FROM_TOKEN = {v: k for k, v in TRACK_FLAG_TOKENS.items()}
 
 
+def token_category(token: str) -> str:
+    """Classify a token for weighted losses and per-class accuracy."""
+    if token.startswith("DUR_"):
+        return "duration"
+    if token in TYPE_FROM_TOKEN:
+        return "type"
+    if token.startswith(("SHAPE_", "CHAIN_", "TRACK_")):
+        return "structure"
+    if token.startswith(("P_", "S_")):
+        return "position"
+    if token == "BAR" or token.startswith("T_"):
+        return "time"
+    if token.startswith("FLAG_"):
+        return "flag"
+    if token.startswith(("DIFF_", "LEVEL_")):
+        return "condition"
+    return "special"
+
+
 class TokenizeError(ValueError):
     pass
 
@@ -221,10 +240,18 @@ class ParsedSequence:
 
 
 class ChartTokenGrammar:
-    """Incremental parser and constrained-decoding state machine."""
+    """Incremental parser and constrained-decoding state machine.
 
-    def __init__(self, vocab: ChartVocabulary):
+    ``strict=True`` additionally enforces musical constraints that greedy
+    decoding otherwise violates: no two events at the same tick/position, no
+    new event inside an active hold, and no degenerate straight slide whose
+    end equals its start.  Tokenizing and round-tripping existing charts uses
+    the default permissive mode so unusual but legal source data still parses.
+    """
+
+    def __init__(self, vocab: ChartVocabulary, *, strict: bool = False):
         self.vocab = vocab
+        self.strict = strict
         self.parsed = ParsedSequence()
         self.state = "start"
         self.bar = 0
@@ -238,6 +265,11 @@ class ChartTokenGrammar:
         self.current_segments: list[SlideSegment] = []
         self.current_segment: SlideSegment | None = None
         self.used_flags: set[str] = set()
+        # Positions already occupied at ``tick_positions_tick``.
+        self.tick_positions_tick: int | None = None
+        self.tick_positions: set[str] = set()
+        # Outer position / touch sensor -> end tick of the active hold.
+        self.active_holds: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     def feed(self, token: str) -> None:
@@ -280,6 +312,9 @@ class ChartTokenGrammar:
             tick = self.bar * TICKS_PER_BAR + unit * TIME_UNIT
             if tick < self.last_event_tick:
                 raise TokenizeError("time moved backwards")
+            if self.strict and tick != self.tick_positions_tick:
+                self.tick_positions.clear()
+                self.tick_positions_tick = tick
             self.current_tick = tick
             self.state = "type"
             return
@@ -314,7 +349,13 @@ class ChartTokenGrammar:
             if self.state == "slide_end":
                 if not token.startswith("P_"):
                     raise TokenizeError("slide end must be an outer position")
-                self._current_segment_require().end = token[len("P_") :]
+                end = token[len("P_") :]
+                segment = self._current_segment_require()
+                if self.strict and segment.shape == "-" and end == self._segment_start():
+                    raise TokenizeError(
+                        "straight slide cannot end at its start position"
+                    )
+                segment.end = end
                 self.state = "slide_dur"
                 return
             raise TokenizeError(f"position token in state {self.state!r}")
@@ -417,10 +458,19 @@ class ChartTokenGrammar:
             return set(TYPE_TOKENS.values())
         if state == "pos":
             if self.current_type in ("tap", "hold", "slide"):
-                return {f"P_{i}" for i in range(1, 9)}
-            if self.current_type in ("touch", "touch_hold"):
-                return {f"S_{sensor}" for sensor in TOUCH_SENSORS}
-            return set()
+                allowed = {f"P_{i}" for i in range(1, 9)}
+            elif self.current_type in ("touch", "touch_hold"):
+                allowed = {f"S_{sensor}" for sensor in TOUCH_SENSORS}
+            else:
+                return set()
+            if self.strict:
+                blocked = self._blocked_positions()
+                allowed = {
+                    token
+                    for token in allowed
+                    if token.split("_", 1)[1] not in blocked
+                }
+            return allowed
         if state == "hold_dur":
             return {"DUR_NONE"} | {f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)}
         if state in ("tap_flags", "hold_flags"):
@@ -430,7 +480,15 @@ class ChartTokenGrammar:
         if state == "slide_shape":
             return set(SHAPE_TOKENS.values())
         if state in ("slide_via", "slide_end"):
-            return {f"P_{i}" for i in range(1, 9)}
+            allowed = {f"P_{i}" for i in range(1, 9)}
+            if (
+                state == "slide_end"
+                and self.strict
+                and self.current_segment is not None
+                and self.current_segment.shape == "-"
+            ):
+                allowed.discard(f"P_{self._segment_start()}")
+            return allowed
         if state == "slide_dur":
             return {"DUR_NONE"} | {f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)}
         if state == "slide_after_dur":
@@ -488,6 +546,41 @@ class ChartTokenGrammar:
             if not token.startswith("S_"):
                 raise TokenizeError(f"touch sensor expected, got {token}")
             self.current_pos = token[len("S_") :]
+        if self.strict:
+            self._expire_holds()
+            if self.current_pos in self.tick_positions:
+                raise TokenizeError(
+                    f"position {self.current_pos} already used at tick "
+                    f"{self.current_tick}"
+                )
+            hold_end = self.active_holds.get(self.current_pos)
+            if hold_end is not None and hold_end > (self.current_tick or 0):
+                raise TokenizeError(
+                    f"position {self.current_pos} is inside an active hold "
+                    f"until tick {hold_end}"
+                )
+            self.tick_positions.add(self.current_pos)
+
+    def _segment_start(self) -> str | None:
+        """Start position of the slide segment currently being built."""
+        if not self.current_segments or self.current_chain == "same_start":
+            return self.current_pos
+        return self.current_segments[-1].end
+
+    def _expire_holds(self) -> None:
+        tick = self.current_tick if self.current_tick is not None else 0
+        expired = [pos for pos, end in self.active_holds.items() if end <= tick]
+        for pos in expired:
+            del self.active_holds[pos]
+
+    def _blocked_positions(self) -> set[str]:
+        self._expire_holds()
+        tick = self.current_tick if self.current_tick is not None else 0
+        blocked = set(self.tick_positions)
+        blocked |= {
+            pos for pos, end in self.active_holds.items() if end > tick
+        }
+        return blocked
 
     def _current_segment_require(self) -> SlideSegment:
         if self.current_segment is None:
@@ -538,6 +631,15 @@ class ChartTokenGrammar:
                 raw="",
             )
         self.parsed.events.append(event)
+        if (
+            self.strict
+            and self.current_type in ("hold", "touch_hold")
+            and self.current_duration is not None
+            and self.current_duration.ticks
+        ):
+            self.active_holds[self.current_pos] = (
+                self.current_tick + self.current_duration.ticks
+            )
         self.last_event_tick = max(self.last_event_tick, self.current_tick)
         self.current_tick = None
         self.current_type = None

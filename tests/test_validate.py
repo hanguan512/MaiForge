@@ -36,6 +36,48 @@ class TestValidation(unittest.TestCase):
         )
         self.assertFalse(validate_chart(chart).ok)
 
+    def test_slide_shape_endpoint_warnings(self):
+        chart = make_chart(
+            [
+                Event(
+                    tick=0,
+                    kind="slide",
+                    position="7",
+                    slide=[
+                        SlideSegment(
+                            shape="-", end="6", duration=Duration(ticks=960)
+                        )
+                    ],
+                ),
+                Event(
+                    tick=1920,
+                    kind="slide",
+                    position="1",
+                    slide=[
+                        SlideSegment(
+                            shape="s", end="2", duration=Duration(ticks=960)
+                        )
+                    ],
+                ),
+                Event(
+                    tick=3840,
+                    kind="slide",
+                    position="1",
+                    slide=[
+                        SlideSegment(
+                            shape="w", end="5", duration=Duration(ticks=960)
+                        )
+                    ],
+                ),
+            ]
+        )
+        report = validate_chart(chart)
+        self.assertTrue(report.ok, report.errors)
+        messages = " ".join(report.warnings)
+        self.assertIn("7->6", messages)
+        self.assertIn("1->2", messages)
+        self.assertNotIn("1->5", messages)
+
     def test_hold_overlap(self):
         chart = make_chart(
             [

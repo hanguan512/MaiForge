@@ -21,9 +21,15 @@ from ..maidata.model import (
     Duration,
     Event,
     SlideSegment,
+    position_distance,
 )
 from ..maidata.stats import DIFFICULTY_BY_INDEX, profile_for_difficulty
 from ..maidata.validate import validate_chart
+
+# Hard rule-layer cap: the baseline may stack at most two notes at one tick.
+# Higher difficulty is expressed through density, patterns and note types,
+# never through 3+ note chords.
+MAX_SIMULTANEOUS = 2
 
 DIFFICULTY_RULES: dict[str, dict[str, Any]] = {
     "easy": {
@@ -76,7 +82,7 @@ DIFFICULTY_RULES: dict[str, dict[str, Any]] = {
     },
     "master": {
         "grid": 16,
-        "max_simultaneous": 3,
+        "max_simultaneous": 2,
         "hold_prob": 0.10,
         "slide_prob": 0.10,
         "touch_prob": 0.14,
@@ -88,7 +94,7 @@ DIFFICULTY_RULES: dict[str, dict[str, Any]] = {
     },
     "remaster": {
         "grid": 16,
-        "max_simultaneous": 3,
+        "max_simultaneous": 2,
         "hold_prob": 0.08,
         "slide_prob": 0.12,
         "touch_prob": 0.18,
@@ -131,6 +137,7 @@ class RuleConfig:
     seed: int = 0
     grid: int | None = None
     target_density: float | None = None
+    density_scale: float | None = None
     max_simultaneous: int | None = None
     hold_prob: float | None = None
     slide_prob: float | None = None
@@ -185,9 +192,21 @@ def generate_chart(
         value = getattr(cfg, key, None)
         if value is not None:
             base[key] = value
+    # Even an explicit config override cannot exceed the rule-layer cap.
+    base["max_simultaneous"] = max(
+        1, min(int(base["max_simultaneous"]), MAX_SIMULTANEOUS)
+    )
     profile = profile_for_difficulty(name, cfg.level)
-    if cfg.target_density is None:
-        base["target_density"] = profile["notes_per_second"]
+    density_scale = 1.0 if cfg.density_scale is None else float(cfg.density_scale)
+    if density_scale <= 0:
+        raise ValueError("density_scale must be positive")
+    if cfg.target_density is not None:
+        target_density = float(cfg.target_density)
+    else:
+        target_density = float(profile["notes_per_second"]) * density_scale
+    if target_density <= 0:
+        raise ValueError("target_density must be positive")
+    base["target_density"] = target_density
     grid = int(base["grid"])
     grid_ticks = max(1, TICKS_PER_BAR // grid)
     rng = random.Random(cfg.seed)
@@ -485,13 +504,29 @@ def _choose_end(
     used: set[str],
     rng: random.Random,
 ) -> str:
-    candidates = [str(i) for i in range(1, 9) if str(i) != pos]
+    """Pick a tail position that is legal for the simai slide shape.
+
+    ``s``/``z``/``w`` always connect to the opposite button, and a straight
+    ``-`` needs at least two positions of separation; adjacent straight slides
+    produce an invalid star tail in the game.
+    """
+    start = int(pos)
+    if shape in ("s", "z", "w"):
+        return str((start + 3) % 8 + 1)  # exactly 4 positions away
+    candidates = [
+        str(i)
+        for i in range(1, 9)
+        if str(i) != pos
+        and str(i) not in used
+        and (shape != "-" or position_distance(pos, str(i)) >= 2)
+    ]
+    if not candidates:
+        # Degenerate fallback: far side of the ring is always legal for "-".
+        candidates = [
+            str(i) for i in range(1, 9) if position_distance(pos, str(i)) >= 2
+        ]
     rng.shuffle(candidates)
-    for candidate in candidates:
-        if shape == "-" and candidate == pos:
-            continue
-        return candidate
-    return "5" if pos != "5" else "1"
+    return candidates[0]
 
 
 def _choose_touch_sensor(used: set[str], rng: random.Random) -> str | None:
@@ -512,6 +547,8 @@ def _repair_events(events: list[Event], grid_ticks: int) -> list[Event]:
                 del active_holds[pos]
         tick_used = used_at_tick.setdefault(event.tick, set())
         if event.position in tick_used:
+            continue
+        if len(tick_used) >= MAX_SIMULTANEOUS:
             continue
         if event.position in active_holds and event.kind != "hold":
             continue

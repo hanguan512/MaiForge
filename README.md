@@ -2,7 +2,7 @@
 
 **面向 maimai DX / simai 的音频 → maidata 谱面生成工具。**
 
-MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译为 `maidata.txt`，从而生成 simai 谱面。仓库目前包含 P0–P2 的基础能力，以及 P3 神经模型的 v0 训练/推理代码：完整的格式工具链、音频时间轴前端、规则基线、数据集流水线、窗口化训练管线和音符级评估。P3 v0 尚未训练（greedy 解码、恒定 BPM、无跨窗口 Hold/Slide 状态），训练需要 GPU 服务器和数据。
+MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译为 `maidata.txt`，从而生成 simai 谱面。仓库目前包含 P0–P2 的基础能力，以及 P3 神经模型的 v0 训练/推理代码：完整的格式工具链、音频时间轴前端、规则基线、数据集流水线、窗口化训练管线和音符级评估。P3 v0 尚未训练（默认采样解码、支持手动 tempo map、无跨窗口 Hold/Slide 状态），训练需要 GPU 服务器和数据。
 
 > **命名说明：** MaiForge 是项目名称。Python 包和命令行工具目前仍名为 `mainote`，后续计划重命名。
 
@@ -28,7 +28,7 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 - **音频前端：** ffmpeg 解码、numpy 起音检测、BPM/节拍/强拍跟踪，并支持通过 `--bpm` / `--first` 手动修正。
 - **规则基线：** 根据难度和等级条件，从音频生成合法的谱面。
 - **数据集流水线：** 数据收录、音频与谱面对齐评分、按难度统计、无数据泄漏的歌曲级划分，以及按难度导出样本。
-- **P3 v0 训练/推理代码：** log-mel 特征 + 音频编码器 + 事件 Transformer、窗口数据集、难度条件、语法约束解码和 checkpoint 推理（尚未训练；当前为 greedy 解码）。
+- **P3 v0 训练/推理代码：** log-mel 特征 + 音频编码器 + 事件 Transformer（架构 v2）、窗口数据集、难度条件、严格语法约束的采样/贪婪解码和 checkpoint 推理（尚未训练）。
 - **评估：** 起音 F1、位置/类型准确率、时长误差、滑动端点准确率以及难度画像差异。
 - **合成演示：** 不依赖任何受版权保护的音频，即可跑通完整的音频 → maidata 流程。
 
@@ -83,6 +83,9 @@ PYTHONPATH=src .venv/bin/python -m mainote generate song.mp3 \
   --difficulty master --level 12.9 -o out/maidata.txt
 ```
 
+密度默认由等级先验决定；可以用 `--density 5.2` 直接指定 notes/s，或用
+`--density-scale 1.3` 按倍数调整（例如 13.5 默认偏保守时可放大）。
+
 如果 BPM 或强拍检测有误，可以手动覆盖后重新生成：
 
 ```bash
@@ -112,7 +115,7 @@ mainote stats <maidata|ir.json> [--json]
 mainote roundtrip <maidata> [--out recompiled.txt]
 mainote eval <generated> <reference> [--index N] [--tolerance 0.06]
 mainote analyze <audio> --out timing.json [--bpm N] [--first S]
-mainote generate <audio> -o maidata.txt [--difficulty master] [--level 12.9] [--timing timing.json]
+mainote generate <audio> -o maidata.txt [--difficulty master] [--level 12.9] [--density N] [--density-scale 1.3] [--timing timing.json]
 mainote demo [--out out/demo]
 mainote dataset ingest <raw_dir> --out <processed_dir> [--align]
 mainote dataset report <processed_dir> [--out report.json] [--csv report.csv]
@@ -217,7 +220,7 @@ python -m mainote ml infer \
   -o out/p3/maidata.txt
 ```
 
-> P3 v0 当前是 greedy 解码、恒定 BPM、无跨窗口 Hold/Slide 状态；训练只有 token 交叉熵，尚无候选重排和难度画像辅助损失。它还不能替代规则基线作为默认生成器。
+> P3 v0 当前默认采样解码（`temperature=0` 可贪婪）、支持手动 tempo map、无跨窗口 Hold/Slide 状态；训练使用按窗口归一化的加权 token 交叉熵，并用音符级 `note_score` 选择 checkpoint，尚无候选重排和难度画像辅助损失。它还不能替代规则基线作为默认生成器。
 
 完整的数据准备、训练、推理、评估和故障排查见 [`docs/TRAINING.md`](docs/TRAINING.md)。
 
@@ -291,10 +294,10 @@ PYTHONPATH=src python3 -m unittest tests.test_parser.TestTokenSyntax.test_path_c
 
 - 当前默认生成器是**规则基线**，不是学习得到的模型。
 - P3 v0 训练/推理代码已经就绪，但仓库没有训练检查点；需要 GPU 服务器和数据。
-- 时间轴前端假设一首歌使用**恒定 BPM**；P3 推理当前也是恒定 BPM。
+- 时间轴前端假设一首歌使用**恒定 BPM**；P3 推理可通过 `--timing` JSON 的 `bpm_changes` 或 `--bpm`/`--first` 手动校正，但不会自动估计 tempo map。
 - 规则基线的等级密度先验在 15.0 封顶，master/remaster 的密度会饱和；13–15/15+ 的复杂度和音符类型比例尚未用真实数据校准。
 - P3 tokenizer 已支持 `15+`（bucket 31）；16.0 以上会 clamp 到 `15+`。高难度的密度和复杂度仍需 P2.5 校准。
-- P3 v0 推理为 greedy，训练只有 token 交叉熵；尚无候选重排、辅助损失和跨窗口状态。
+- P3 v0 默认采样解码（可切换 greedy），训练为加权 token 交叉熵；尚无候选重排、辅助损失和跨窗口状态。
 - 节拍/强拍跟踪较为轻量；真实歌曲可能需要 `--bpm`/`--first` 修正。
 - 仓库内置的测试样本没有音频；音频需由用户自行提供。
 - 神经谱面生成需要大量成对的音频/谱面数据和 GPU。仅凭一首歌不足以训练通用模型。

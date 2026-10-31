@@ -13,6 +13,8 @@ data:
   min_events: 1
   max_windows_per_chart: null
   max_audio_frames: 4096
+  chart_cache_size: 512
+  feature_cache_size: 64
   min_alignment: 0.0
   spec_augment:
     prob: 0.5
@@ -29,10 +31,16 @@ model:
   max_audio_frames: 4096
   max_tokens: 4096
   n_mels: 80
+  # Architecture v2 (incompatible with v1 checkpoints; retrain).
+  embed_scale: true
+  final_norm: true
+  # stride 2 doubles encoder memory vs v1 stride 4.  If the 4070 OOMs, halve
+  # batch_size and double grad_accum to keep the effective batch size.
+  audio_stride: 2
 
 train:
-  # batch 16 reached ~11.6/12 GB on a 4070; 8 x 2 accumulation keeps the same
-  # effective batch and peaks around 7 GB.
+  # batch 16 reached ~11.6/12 GB on a 4070 with the v1 stride-4 encoder;
+  # 8 x 2 accumulation keeps the same effective batch.
   batch_size: 8
   grad_accum: 2
   epochs: 30
@@ -47,3 +55,20 @@ train:
   save_every: 5
   patience: 8
   max_steps: null
+  # Rebalance the 86%-duration vocabulary in the token-level objective.
+  token_class_weights:
+    type: 2.0
+    SLIDE: 3.0
+    TOUCH: 3.0
+    TOUCH_HOLD: 3.0
+    structure: 1.5
+    position: 1.25
+  checkpoint_metric: note_score
+  note_eval:
+    enabled: true
+    every_n_epochs: 5
+    max_songs: 2
+    max_windows: 4
+    max_new_tokens: 2048
+    temperature: 0.0
+    tolerance_seconds: 0.06

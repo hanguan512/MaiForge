@@ -7,6 +7,7 @@ from .tokenizer import (
     ParsedSequence,
     TokenizeError,
     level_bucket,
+    token_category,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "ParsedSequence",
     "TokenizeError",
     "level_bucket",
+    "token_category",
 ]

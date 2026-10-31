@@ -65,5 +65,20 @@ class TestEval(unittest.TestCase):
         self.assertEqual(result["onset"]["recall"], 1.0)
 
 
+class TestTempoMap(unittest.TestCase):
+    def test_seconds_and_ticks_roundtrip_with_tempo_changes(self):
+        chart = Chart(
+            index=5,
+            initial_bpm=120.0,
+            bpm_changes=[BpmChange(0, 120.0), BpmChange(TICKS_PER_BAR, 240.0)],
+        )
+        # First bar at 120 BPM = 2s; second bar at 240 BPM = 1s.
+        self.assertAlmostEqual(chart.seconds_at_tick(TICKS_PER_BAR), 2.0)
+        self.assertAlmostEqual(chart.seconds_at_tick(2 * TICKS_PER_BAR), 3.0)
+        self.assertEqual(chart.ticks_at_seconds(1.0), TICKS_PER_BAR // 2)
+        self.assertEqual(chart.ticks_at_seconds(2.0), TICKS_PER_BAR)
+        self.assertEqual(chart.ticks_at_seconds(3.0), 2 * TICKS_PER_BAR)
+
+
 if __name__ == "__main__":
     unittest.main()

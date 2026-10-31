@@ -45,9 +45,13 @@ class ChartWindowDataset(Dataset):
         min_alignment: float = 0.0,
         augment: bool = False,
         spec_augment: dict[str, Any] | None = None,
+        chart_cache_size: int = 512,
+        feature_cache_size: int = 64,
     ):
         if window_bars <= 0 or stride_bars <= 0:
             raise ValueError("window_bars and stride_bars must be positive")
+        if chart_cache_size < 1 or feature_cache_size < 1:
+            raise ValueError("cache sizes must be positive")
         self.manifest_path = Path(manifest_path)
         self.features_dir = Path(features_dir)
         self.split = split
@@ -59,7 +63,10 @@ class ChartWindowDataset(Dataset):
         self.max_audio_frames = max_audio_frames
         self.augment = augment
         self.spec_augment = spec_augment or {}
-        self._cache: OrderedDict[str, tuple[np.ndarray, float]] = OrderedDict()
+        self.chart_cache_size = chart_cache_size
+        self.feature_cache_size = feature_cache_size
+        self._feature_cache: OrderedDict[str, tuple[np.ndarray, float]] = OrderedDict()
+        self._chart_cache: OrderedDict[Path, Chart] = OrderedDict()
         self._rng = random.Random(0)
         self.windows: list[WindowSpec] = []
 
@@ -77,8 +84,7 @@ class ChartWindowDataset(Dataset):
             if not sample_path.exists():
                 continue
             try:
-                sample = json.loads(sample_path.read_text(encoding="utf-8"))
-                chart = Chart.from_dict(sample["chart"])
+                chart = self._load_chart(sample_path)
             except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 continue
             max_tick = max((e.tick for e in chart.events), default=0)
@@ -113,8 +119,7 @@ class ChartWindowDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         spec = self.windows[index]
-        sample = json.loads(spec.sample_path.read_text(encoding="utf-8"))
-        chart = Chart.from_dict(sample["chart"])
+        chart = self.chart_for(index)
         row = spec.row
         start_tick = spec.start_bar * TICKS_PER_BAR
         end_tick = spec.end_bar * TICKS_PER_BAR
@@ -147,8 +152,16 @@ class ChartWindowDataset(Dataset):
             b = min(len(mel), a + 1)
         window = mel[a:b].copy()
         if self.max_audio_frames and len(window) > self.max_audio_frames:
-            start = max(0, (len(window) - self.max_audio_frames) // 2)
-            window = window[start : start + self.max_audio_frames]
+            # Do not silently center-crop: token labels cover the whole
+            # window, so cropping the audio would misalign features and
+            # targets.  Reject loudly instead.
+            raise ValueError(
+                f"window {spec.start_bar}-{spec.end_bar} of "
+                f"{row.get('song_id', '?')} has {len(window)} mel frames, "
+                f"exceeding max_audio_frames={self.max_audio_frames}; "
+                "reduce data.window_bars/context_bars or raise "
+                "max_audio_frames to match the model config."
+            )
         if self.augment and self.spec_augment:
             window = self._spec_augment(window)
         return {
@@ -162,6 +175,26 @@ class ChartWindowDataset(Dataset):
         }
 
     # ------------------------------------------------------------------
+    def chart_for(self, index: int) -> Chart:
+        """Parsed chart for a window (LRU-cached; shared, do not mutate)."""
+        return self._load_chart(self.windows[index].sample_path)
+
+    def window_bounds(self, index: int) -> tuple[int, int]:
+        spec = self.windows[index]
+        return spec.start_bar * TICKS_PER_BAR, spec.end_bar * TICKS_PER_BAR
+
+    def _load_chart(self, path: Path) -> Chart:
+        cached = self._chart_cache.pop(path, None)
+        if cached is not None:
+            self._chart_cache[path] = cached
+            return cached
+        sample = json.loads(path.read_text(encoding="utf-8"))
+        chart = Chart.from_dict(sample["chart"])
+        self._chart_cache[path] = chart
+        while len(self._chart_cache) > self.chart_cache_size:
+            self._chart_cache.popitem(last=False)
+        return chart
+
     def _read_rows(self, *, min_alignment: float) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for line in self.manifest_path.read_text(encoding="utf-8").splitlines():
@@ -185,10 +218,10 @@ class ChartWindowDataset(Dataset):
         return rows
 
     def _load_features(self, song_id: str) -> tuple[np.ndarray, float]:
-        if song_id in self._cache:
-            value = self._cache.pop(song_id)
-            self._cache[song_id] = value
-            return value
+        cached = self._feature_cache.pop(song_id, None)
+        if cached is not None:
+            self._feature_cache[song_id] = cached
+            return cached
         path = self.features_dir / f"{song_id}.npz"
         if not path.exists():
             raise FileNotFoundError(
@@ -198,9 +231,9 @@ class ChartWindowDataset(Dataset):
         with np.load(path, allow_pickle=False) as data:
             mel = np.asarray(data["mel"], dtype=np.float32)
             fps = float(data["fps"])
-        self._cache[song_id] = (mel, fps)
-        while len(self._cache) > 8:
-            self._cache.popitem(last=False)
+        self._feature_cache[song_id] = (mel, fps)
+        while len(self._feature_cache) > self.feature_cache_size:
+            self._feature_cache.popitem(last=False)
         return mel, fps
 
     def _spec_augment(self, mel: np.ndarray) -> np.ndarray:

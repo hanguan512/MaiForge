@@ -10,6 +10,7 @@ from mainote.ml.tokenizer import (
     EventTokenizer,
     TokenizeError,
     level_bucket,
+    token_category,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,110 @@ class TestTokenizer(unittest.TestCase):
         self.assertEqual(tokens, ["BOS", "DIFF_5", "LEVEL_0", "EOS"])
         parsed = tokenizer.detokenize(tokens)
         self.assertEqual(parsed.events, [])
+
+    def test_token_category(self):
+        self.assertEqual(token_category("TAP"), "type")
+        self.assertEqual(token_category("DUR_48"), "duration")
+        self.assertEqual(token_category("SHAPE_MINUS"), "structure")
+        self.assertEqual(token_category("CHAIN_PATH"), "structure")
+        self.assertEqual(token_category("P_3"), "position")
+        self.assertEqual(token_category("S_A1"), "position")
+        self.assertEqual(token_category("T_12"), "time")
+        self.assertEqual(token_category("BAR"), "time")
+        self.assertEqual(token_category("FLAG_BREAK"), "flag")
+        self.assertEqual(token_category("LEVEL_24"), "condition")
+        self.assertEqual(token_category("END_EVENT"), "special")
+
+
+class TestStrictGrammar(unittest.TestCase):
+    def _grammar(self) -> ChartTokenGrammar:
+        return ChartTokenGrammar(ChartVocabulary.default(), strict=True)
+
+    def test_rejects_duplicate_position_at_same_tick(self):
+        grammar = self._grammar()
+        for token in (
+            "BOS",
+            "T_0",
+            "TAP",
+            "P_1",
+            "END_EVENT",
+            "T_0",
+            "TAP",
+        ):
+            grammar.feed(token)
+        self.assertNotIn("P_1", grammar.allowed_tokens())
+        with self.assertRaises(TokenizeError):
+            grammar.feed("P_1")
+
+    def test_allows_chord_at_same_tick(self):
+        grammar = self._grammar()
+        for token in ("BOS", "T_0", "TAP", "P_1", "END_EVENT", "T_0", "TAP"):
+            grammar.feed(token)
+        allowed = grammar.allowed_tokens()
+        self.assertNotIn("P_1", allowed)
+        self.assertIn("P_2", allowed)
+        grammar.feed("P_2")
+        grammar.feed("END_EVENT")
+        self.assertEqual(len(grammar.finish().events), 2)
+
+    def test_rejects_degenerate_straight_slide(self):
+        grammar = self._grammar()
+        for token in ("BOS", "T_0", "SLIDE", "P_1", "CHAIN_SINGLE", "SHAPE_MINUS"):
+            grammar.feed(token)
+        self.assertNotIn("P_1", grammar.allowed_tokens())
+        with self.assertRaises(TokenizeError):
+            grammar.feed("P_1")
+
+    def test_blocks_position_inside_active_hold(self):
+        grammar = self._grammar()
+        for token in (
+            "BOS",
+            "T_0",
+            "HOLD",
+            "P_1",
+            "DUR_48",  # one beat
+            "END_EVENT",
+            "T_24",  # half a beat later
+            "TAP",
+        ):
+            grammar.feed(token)
+        self.assertNotIn("P_1", grammar.allowed_tokens())
+        with self.assertRaises(TokenizeError):
+            grammar.feed("P_1")
+
+    def test_allows_position_after_hold_ends(self):
+        grammar = self._grammar()
+        for token in (
+            "BOS",
+            "T_0",
+            "HOLD",
+            "P_1",
+            "DUR_48",
+            "END_EVENT",
+            "T_48",  # exactly when the hold ends
+            "TAP",
+        ):
+            grammar.feed(token)
+        self.assertIn("P_1", grammar.allowed_tokens())
+        grammar.feed("P_1")
+        grammar.feed("END_EVENT")
+        self.assertEqual(len(grammar.finish().events), 2)
+
+    def test_permissive_mode_still_parses_duplicates(self):
+        grammar = ChartTokenGrammar(ChartVocabulary.default())
+        for token in (
+            "BOS",
+            "T_0",
+            "TAP",
+            "P_1",
+            "END_EVENT",
+            "T_0",
+            "TAP",
+            "P_1",
+            "END_EVENT",
+        ):
+            grammar.feed(token)
+        self.assertEqual(len(grammar.finish().events), 2)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,6 @@ from ..generate.rule import DEFAULT_LEVELS
 from ..maidata.compiler import compile_maidata
 from ..maidata.model import (
     TICKS_PER_BAR,
-    TICKS_PER_BEAT,
     BpmChange,
     Chart,
     DivisionChange,
@@ -24,7 +23,7 @@ from ..maidata.model import (
 )
 from ..maidata.stats import DIFFICULTY_BY_INDEX, chart_stats
 from ..maidata.validate import validate_chart
-from .decode import greedy_decode
+from .decode import constrained_decode
 from .features import log_mel_spectrogram
 from .model import ChartModel, ChartModelConfig, build_model
 from .tokenizer import ChartVocabulary, EventTokenizer
@@ -44,7 +43,14 @@ def load_checkpoint(
     model = build_model(
         len(vocab.tokens), model_cfg, pad_id=vocab.pad_id
     ).to(device)
-    model.load_state_dict(checkpoint["model"])
+    try:
+        model.load_state_dict(checkpoint["model"])
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "checkpoint is not compatible with this architecture. "
+            "Architecture v2 (embed_scale/final_norm/audio_stride) requires "
+            "retraining; v1 checkpoints cannot be loaded."
+        ) from exc
     model.eval()
     return model, vocab, tokenizer, checkpoint
 
@@ -63,9 +69,11 @@ def infer(
     stride_bars: int | None = None,
     context_bars: int | None = None,
     max_new_tokens: int = 2048,
-    temperature: float = 0.0,
-    top_k: int | None = None,
+    temperature: float = 0.8,
+    top_k: int | None = 20,
     seed: int = 0,
+    bpm: float | None = None,
+    first: float | None = None,
     title: str | None = None,
     artist: str | None = None,
 ) -> dict[str, Any]:
@@ -83,8 +91,32 @@ def infer(
         from ..audio.features import analyze_audio
 
         timing = analyze_audio(audio_path)
+    if bpm is not None:
+        timing.retime(float(bpm))
+    if first is not None:
+        timing.first = float(first)
     if timing.bpm <= 0:
         raise ValueError("timing BPM must be positive")
+
+    # Optional manual tempo map.  Training windows were cut with the chart's
+    # tempo map; using a constant BPM at inference drifts on BPM-change songs.
+    bpm_changes: list[BpmChange] = []
+    for change in timing.bpm_changes:
+        tick = int(change.get("tick", 0))
+        value = float(change.get("bpm", 0.0))
+        if value <= 0:
+            raise ValueError(f"tempo map BPM must be positive at tick {tick}")
+        bpm_changes.append(BpmChange(tick, value))
+    initial_bpm = timing.bpm
+    for change in bpm_changes:
+        if change.tick <= 0:
+            initial_bpm = change.bpm
+    tempo = Chart(
+        index=0,
+        first=timing.first,
+        initial_bpm=initial_bpm,
+        bpm_changes=bpm_changes,
+    )
 
     mel, fps = _load_or_compute_mel(
         audio_path, features_path, model.config.n_mels
@@ -94,15 +126,16 @@ def infer(
     if level_value is None:
         level_value = DEFAULT_LEVELS.get(_normalize_difficulty(difficulty), 12.0)
 
-    sec_per_bar = 4.0 * 60.0 / timing.bpm
     first_onset = min(timing.onset_times) if timing.onset_times else timing.first
     last_onset = max(timing.onset_times) if timing.onset_times else timing.duration
-    start_bar = max(0, int(math.floor((first_onset - timing.first) / sec_per_bar)))
+    first_tick = tempo.ticks_at_seconds(max(0.0, first_onset - timing.first))
+    last_tick = tempo.ticks_at_seconds(max(0.0, last_onset - timing.first))
+    start_bar = max(0, first_tick // TICKS_PER_BAR)
     end_bar = max(
         start_bar + window_bars,
-        int(math.ceil((last_onset - timing.first + sec_per_bar) / sec_per_bar)),
+        int(math.ceil((last_tick + TICKS_PER_BAR) / TICKS_PER_BAR)),
     )
-    max_tick = int(round((timing.duration - timing.first) / (60.0 / timing.bpm) * TICKS_PER_BEAT))
+    max_tick = tempo.ticks_at_seconds(max(0.0, timing.duration - timing.first))
     max_bar = max(1, math.ceil(max_tick / TICKS_PER_BAR))
 
     events: list[Event] = []
@@ -125,7 +158,8 @@ def infer(
             0,
             int(
                 math.floor(
-                    (timing.first + _tick_seconds(context_start_tick, timing.bpm)) * fps
+                    (timing.first + tempo.seconds_at_tick(context_start_tick))
+                    * fps
                 )
             ),
         )
@@ -133,17 +167,24 @@ def infer(
             len(mel),
             int(
                 math.ceil(
-                    (timing.first + _tick_seconds(context_end_tick, timing.bpm)) * fps
+                    (timing.first + tempo.seconds_at_tick(context_end_tick))
+                    * fps
                 )
             ),
         )
         if b <= a:
             continue
         window = mel[a:b]
+        if window.shape[0] > model.config.max_audio_frames:
+            warnings.append(
+                f"window {start}: {window.shape[0]} mel frames exceed "
+                f"max_audio_frames={model.config.max_audio_frames}; "
+                "the encoder will truncate the tail"
+            )
         mel_tensor = torch.from_numpy(window).float().unsqueeze(0).to(device)
         mel_mask = torch.zeros((1, window.shape[0]), dtype=torch.bool, device=device)
         try:
-            ids, parsed = greedy_decode(
+            ids, parsed = constrained_decode(
                 model,
                 mel_tensor,
                 mel_mask,
@@ -204,9 +245,9 @@ def infer(
         level=_fmt_level(level_value),
         designer="mainote-p3",
         first=timing.first,
-        initial_bpm=timing.bpm,
+        initial_bpm=initial_bpm,
         events=events,
-        bpm_changes=[BpmChange(0, timing.bpm)],
+        bpm_changes=[BpmChange(change.tick, change.bpm) for change in bpm_changes],
         division_changes=[DivisionChange(0, 48)],
         metadata={"lv": _fmt_level(level_value), "des": "mainote-p3"},
         end_tick=_round_up_bar(max(e.end_tick() for e in events)),
@@ -236,7 +277,7 @@ def infer(
     title = title or timing.tags.get("title") or Path(audio_path).stem
     artist = artist or timing.tags.get("artist") or ""
     maidata = maidata_for_chart(
-        chart, title=title, artist=artist, wholebpm=timing.bpm
+        chart, title=title, artist=artist, wholebpm=initial_bpm
     )
     text = compile_maidata(maidata)
     output_path.write_text(text, encoding="utf-8")
@@ -254,7 +295,10 @@ def infer(
         "notes_per_second": chart_stats(chart)["notes_per_second"],
         "difficulty": _normalize_difficulty(difficulty),
         "level": _fmt_level(level_value),
-        "bpm": timing.bpm,
+        "bpm": initial_bpm,
+        "bpm_changes": timing.bpm_changes,
+        "temperature": temperature,
+        "top_k": top_k,
         "warnings": warnings + report.warnings,
     }
     (output_path.parent / "p3_summary.json").write_text(
@@ -285,10 +329,6 @@ def _load_or_compute_mel(
         audio.samples, audio.sr, n_mels=n_mels
     )
     return mel, fps
-
-
-def _tick_seconds(tick: int, bpm: float) -> float:
-    return tick / TICKS_PER_BEAT * 60.0 / bpm
 
 
 def _resolve_device(value: str | None) -> torch.device:
@@ -398,9 +438,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stride-bars", type=int, default=None)
     parser.add_argument("--context-bars", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--bpm", type=float, default=None)
+    parser.add_argument("--first", type=float, default=None)
     parser.add_argument("--title", default=None)
     parser.add_argument("--artist", default=None)
     return parser
@@ -425,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
         temperature=args.temperature,
         top_k=args.top_k,
         seed=args.seed,
+        bpm=args.bpm,
+        first=args.first,
         title=args.title,
         artist=args.artist,
     )

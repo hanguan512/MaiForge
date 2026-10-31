@@ -440,7 +440,9 @@ class JobManager:
             command += ["--timing", str(timing)]
         if features is not None:
             command += ["--features", str(features)]
-        if temperature is not None and temperature > 0:
+        if temperature is not None:
+            # Pass 0 explicitly: the CLI default is sampling, so omitting a
+            # user-requested greedy decode would silently sample instead.
             command += ["--temperature", str(temperature)]
         if top_k is not None:
             command += ["--top-k", str(top_k)]

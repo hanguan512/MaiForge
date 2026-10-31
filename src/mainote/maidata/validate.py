@@ -18,6 +18,7 @@ from .model import (
     Chart,
     Event,
     Maidata,
+    position_distance,
     TICKS_PER_BEAT,
 )
 
@@ -230,6 +231,24 @@ def _validate_event(event: Event, report: ValidationReport) -> None:
                 report.errors.append(
                     f"tick {event.tick}: straight slide starts and ends at {segment.end!r}"
                 )
+            elif (
+                segment_start in POSITIONS
+                and segment.end in POSITIONS
+                and segment.shape in ("-", "s", "z", "w")
+            ):
+                distance = position_distance(segment_start, segment.end)
+                if segment.shape == "-" and distance == 1:
+                    report.warnings.append(
+                        f"tick {event.tick}: straight slide "
+                        f"{segment_start}->{segment.end} is adjacent; simai "
+                        "needs at least two positions of separation"
+                    )
+                elif segment.shape in ("s", "z", "w") and distance != 4:
+                    report.warnings.append(
+                        f"tick {event.tick}: {segment.shape} slide "
+                        f"{segment_start}->{segment.end} should end on the "
+                        "opposite button"
+                    )
             if event.chain_type != "path":
                 _validate_duration(
                     segment.duration,

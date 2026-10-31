@@ -25,6 +25,9 @@ class TimingInfo:
     beat_phase: float = 0.0
     downbeat_phase: int = 0
     tags: dict[str, str] = field(default_factory=dict)
+    # Optional manual tempo map: [{"tick": 0, "bpm": 180}, ...].  Empty means
+    # constant ``bpm``.  Unlike beat_times this maps chart ticks directly.
+    bpm_changes: list[dict[str, float]] = field(default_factory=list)
 
     @property
     def seconds_per_beat(self) -> float:
@@ -84,6 +87,7 @@ class TimingInfo:
         self.beat_times = beats
         self.downbeat_times = beats[self.downbeat_phase :: 4]
         self.beat_phase = beats[0]
+        self.bpm_changes = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +104,10 @@ class TimingInfo:
             "downbeat_times": [round(float(x), 6) for x in self.downbeat_times],
             "onset_times": [round(float(x), 6) for x in self.onset_times],
             "onset_strengths": [round(float(x), 6) for x in self.onset_strengths],
+            "bpm_changes": [
+                {"tick": int(change["tick"]), "bpm": round(float(change["bpm"]), 6)}
+                for change in self.bpm_changes
+            ],
         }
 
     @classmethod
@@ -118,6 +126,10 @@ class TimingInfo:
             beat_phase=float(data.get("beat_phase", 0.0)),
             downbeat_phase=int(data.get("downbeat_phase", 0)),
             tags={str(k): str(v) for k, v in data.get("tags", {}).items()},
+            bpm_changes=[
+                {"tick": int(change["tick"]), "bpm": float(change["bpm"])}
+                for change in data.get("bpm_changes", [])
+            ],
         )
 
     def save(self, path: str | Path) -> None:

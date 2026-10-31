@@ -17,7 +17,7 @@ from .tokenizer import (
 
 
 @torch.no_grad()
-def greedy_decode(
+def constrained_decode(
     model: ChartModel,
     mel: torch.Tensor,
     mel_mask: torch.Tensor,
@@ -33,6 +33,8 @@ def greedy_decode(
 ) -> tuple[list[int], ParsedSequence]:
     """Generate one chart/window token sequence with the token grammar.
 
+    ``temperature <= 0`` means greedy decoding; ``temperature > 0`` samples
+    from the grammar-constrained distribution (optionally top-k filtered).
     ``mel`` is shape ``(1, T, n_mels)`` and ``mel_mask`` is ``(1, T)`` with
     ``True`` for padding.
     """
@@ -43,14 +45,14 @@ def greedy_decode(
         f"DIFF_{difficulty_index}",
         f"LEVEL_{level_bucket(level)}",
     ]
-    grammar = ChartTokenGrammar(vocab)
+    # Strict mode forbids duplicate tick/position events, events inside an
+    # active hold, and degenerate straight slides at generation time.
+    grammar = ChartTokenGrammar(vocab, strict=True)
     for token in prompt:
         grammar.feed(token)
     ids = vocab.encode(prompt)
     memory, memory_mask = model.audio(mel, mel_mask)
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    if temperature > 0:
-        torch.manual_seed(seed)
 
     for _ in range(max_new_tokens):
         if grammar.parsed.done:
@@ -69,18 +71,17 @@ def greedy_decode(
             break
         input_ids = torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
         token_mask = torch.zeros_like(input_ids, dtype=torch.bool)
-        tgt = model.token_pos(model.token_embed(input_ids))
         length = input_ids.size(1)
         causal = torch.triu(
             torch.ones((length, length), dtype=torch.bool, device=device),
             diagonal=1,
         )
-        out = model.decoder(
-            tgt,
+        out = model.decode_tokens(
+            input_ids,
             memory,
+            memory_mask=memory_mask,
             tgt_mask=causal,
             tgt_key_padding_mask=token_mask,
-            memory_key_padding_mask=memory_mask,
         )
         logits = model.lm_head(out)[0, -1]
         allowed_ids = [vocab.token_to_id[t] for t in allowed if t in vocab.token_to_id]
@@ -119,3 +120,7 @@ def greedy_decode(
                 f"decoding stopped in incomplete grammar state {grammar.state!r}"
             )
     return ids, grammar.finish()
+
+
+# Backwards-compatible alias: decoding is greedy when temperature <= 0.
+greedy_decode = constrained_decode

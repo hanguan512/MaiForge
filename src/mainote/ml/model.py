@@ -22,6 +22,14 @@ class ChartModelConfig:
     max_audio_frames: int = 4096
     max_tokens: int = 2048
     n_mels: int = 80
+    # Architecture v2.  v1 checkpoints (small embedding added directly to a
+    # sinusoidal PE, no final LayerNorm, stride-4 audio frontend) cannot be
+    # loaded into this model; retrain instead.
+    embed_scale: bool = True
+    final_norm: bool = True
+    # Total temporal downsampling of the mel frontend.  2 keeps ~43 fps,
+    # which preserves much more timing detail than the v1 stride of 4.
+    audio_stride: int = 2
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ChartModelConfig":
@@ -36,6 +44,9 @@ class ChartModelConfig:
             max_audio_frames=int(data.get("max_audio_frames", 4096)),
             max_tokens=int(data.get("max_tokens", 2048)),
             n_mels=int(data.get("n_mels", 80)),
+            embed_scale=bool(data.get("embed_scale", True)),
+            final_norm=bool(data.get("final_norm", True)),
+            audio_stride=int(data.get("audio_stride", 2)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,12 +60,24 @@ class ChartModelConfig:
             "max_audio_frames": self.max_audio_frames,
             "max_tokens": self.max_tokens,
             "n_mels": self.n_mels,
+            "embed_scale": self.embed_scale,
+            "final_norm": self.final_norm,
+            "audio_stride": self.audio_stride,
         }
+
+    def validate(self) -> None:
+        if self.audio_stride < 1 or self.audio_stride & (self.audio_stride - 1):
+            raise ValueError(
+                f"audio_stride must be a power of two >= 1, got {self.audio_stride}"
+            )
 
 
 class PositionalEncoding(nn.Module):
     def __init__(self, dim: int, max_len: int, dropout: float = 0.0):
         super().__init__()
+        if max_len < 1:
+            raise ValueError("max_len must be positive")
+        self.max_len = max_len
         position = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
         div = torch.exp(
             torch.arange(0, dim, 2, dtype=torch.float32)
@@ -75,14 +98,48 @@ class AudioEncoder(nn.Module):
 
     def __init__(self, config: ChartModelConfig):
         super().__init__()
+        config.validate()
         self.config = config
-        self.frontend = nn.Sequential(
-            nn.Conv1d(config.n_mels, config.hidden, kernel_size=5, stride=2, padding=2),
-            nn.GELU(),
-            nn.Conv1d(config.hidden, config.hidden, kernel_size=5, stride=2, padding=2),
-            nn.GELU(),
+        stride = 1
+        layers: list[nn.Module] = []
+        channels = config.n_mels
+        while stride < config.audio_stride:
+            layers.extend(
+                [
+                    nn.Conv1d(
+                        channels,
+                        config.hidden,
+                        kernel_size=5,
+                        stride=2,
+                        padding=2,
+                    ),
+                    nn.GELU(),
+                ]
+            )
+            channels = config.hidden
+            stride *= 2
+        if not layers:
+            # audio_stride == 1 still needs the mel -> hidden projection.
+            layers.extend(
+                [
+                    nn.Conv1d(
+                        channels,
+                        config.hidden,
+                        kernel_size=5,
+                        stride=1,
+                        padding=2,
+                    ),
+                    nn.GELU(),
+                ]
+            )
+        self.frontend = nn.Sequential(*layers)
+        self.frontend_stride = config.audio_stride
+        max_memory = (config.max_audio_frames + self.frontend_stride - 1) // (
+            self.frontend_stride
         )
-        self.pos = PositionalEncoding(config.hidden, config.max_audio_frames, config.dropout)
+        self.pos = PositionalEncoding(
+            config.hidden, max(1, max_memory + 1), config.dropout
+        )
         layer = nn.TransformerEncoderLayer(
             d_model=config.hidden,
             nhead=config.heads,
@@ -96,6 +153,7 @@ class AudioEncoder(nn.Module):
             layer,
             num_layers=config.audio_layers,
             enable_nested_tensor=False,
+            norm=nn.LayerNorm(config.hidden) if config.final_norm else None,
         )
 
     def forward(
@@ -107,11 +165,14 @@ class AudioEncoder(nn.Module):
         x = mel.transpose(1, 2)
         x = self.frontend(x)
         x = x.transpose(1, 2)
-        if x.size(1) > self.config.max_audio_frames:
-            x = x[:, : self.config.max_audio_frames]
+        if x.size(1) > self.pos.max_len:
+            x = x[:, : self.pos.max_len]
         x = self.pos(x)
         pooled = F.max_pool1d(
-            mel_mask.float().unsqueeze(1), kernel_size=4, stride=4
+            mel_mask.float().unsqueeze(1),
+            kernel_size=self.frontend_stride,
+            stride=self.frontend_stride,
+            ceil_mode=True,
         ).squeeze(1)
         if pooled.size(1) < x.size(1):
             pooled = F.pad(
@@ -142,6 +203,7 @@ class ChartModel(nn.Module):
         self.config = config
         self.vocab_size = vocab_size
         self.pad_id = int(pad_id)
+        config.validate()
         self.audio = AudioEncoder(config)
         self.token_embed = nn.Embedding(
             vocab_size, config.hidden, padding_idx=self.pad_id
@@ -153,6 +215,10 @@ class ChartModel(nn.Module):
         nn.init.normal_(self.token_embed.weight, mean=0.0, std=0.02)
         with torch.no_grad():
             self.token_embed.weight[self.pad_id].zero_()
+        # Scale embeddings to unit-ish variance before adding sinusoidal PE.
+        # Without this, PE (std ~0.707) is ~25x larger than token content
+        # (std ~0.028), so position dominates the residual stream.
+        self.embed_scale = math.sqrt(config.hidden) if config.embed_scale else 1.0
         self.token_pos = PositionalEncoding(config.hidden, config.max_tokens, config.dropout)
         layer = nn.TransformerDecoderLayer(
             d_model=config.hidden,
@@ -164,8 +230,35 @@ class ChartModel(nn.Module):
             norm_first=True,
         )
         self.decoder = nn.TransformerDecoder(layer, num_layers=config.decoder_layers)
+        self.decoder_norm = (
+            nn.LayerNorm(config.hidden) if config.final_norm else nn.Identity()
+        )
         self.lm_head = nn.Linear(config.hidden, vocab_size, bias=False)
         self.lm_head.weight = self.token_embed.weight
+
+    def token_embeddings(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Token ids -> decoder input embeddings (shared by train and decode)."""
+        return self.token_pos(self.token_embed(tokens) * self.embed_scale)
+
+    def decode_tokens(
+        self,
+        tokens: torch.Tensor,
+        memory: torch.Tensor,
+        *,
+        memory_mask: torch.Tensor | None = None,
+        tgt_mask: torch.Tensor | None = None,
+        tgt_key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run the decoder stack; callers only need to add ``lm_head``."""
+        tgt = self.token_embeddings(tokens)
+        out = self.decoder(
+            tgt,
+            memory,
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+            memory_key_padding_mask=memory_mask,
+        )
+        return self.decoder_norm(out)
 
     def forward(
         self,
@@ -175,18 +268,17 @@ class ChartModel(nn.Module):
         token_mask: torch.Tensor,
     ) -> torch.Tensor:
         memory, memory_mask = self.audio(mel, mel_mask)
-        tgt = self.token_pos(self.token_embed(tokens))
         length = tokens.size(1)
         causal = torch.triu(
             torch.ones((length, length), dtype=torch.bool, device=tokens.device),
             diagonal=1,
         )
-        out = self.decoder(
-            tgt,
+        out = self.decode_tokens(
+            tokens,
             memory,
+            memory_mask=memory_mask,
             tgt_mask=causal,
             tgt_key_padding_mask=token_mask,
-            memory_key_padding_mask=memory_mask,
         )
         return self.lm_head(out)
 

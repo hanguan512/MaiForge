@@ -23,6 +23,12 @@ DEFAULT_BPM = 120.0
 
 POSITIONS = tuple(str(i) for i in range(1, 9))
 SLIDE_SHAPES = ("pp", "qq", "-", "^", "<", ">", "v", "p", "q", "s", "z", "w", "V")
+
+
+def position_distance(a: str, b: str) -> int:
+    """Shortest distance around the 8-button ring (0..4)."""
+    delta = abs(int(a) - int(b))
+    return min(delta, 8 - delta)
 TOUCH_SENSORS = tuple(
     [f"A{i}" for i in range(1, 9)]
     + [f"B{i}" for i in range(1, 9)]
@@ -322,6 +328,33 @@ class Chart:
             bpm = change.bpm
         seconds += (tick - last_tick) / TICKS_PER_BEAT * 60.0 / bpm
         return seconds
+
+    def ticks_at_seconds(self, seconds: float) -> int:
+        """Inverse of :meth:`seconds_at_tick` under the tempo map."""
+        if seconds <= 0:
+            return 0
+        bpm = self.initial_bpm
+        last_tick = 0
+        elapsed = 0.0
+        for change in self.bpm_changes:
+            if change.tick <= 0:
+                bpm = change.bpm
+                continue
+            if bpm <= 0:
+                return last_tick
+            segment = (
+                (change.tick - last_tick) / TICKS_PER_BEAT * 60.0 / bpm
+            )
+            if elapsed + segment >= seconds:
+                break
+            elapsed += segment
+            last_tick = change.tick
+            bpm = change.bpm
+        if bpm <= 0:
+            return last_tick
+        return last_tick + int(
+            round((seconds - elapsed) * bpm / 60.0 * TICKS_PER_BEAT)
+        )
 
     def event_time_seconds(self, event: Event) -> float:
         return self.first + self.seconds_at_tick(event.tick)

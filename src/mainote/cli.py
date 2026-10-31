@@ -70,6 +70,18 @@ def main(argv: list[str] | None = None) -> int:
     p_gen.add_argument("-o", "--out", required=True, help="maidata output")
     p_gen.add_argument("--difficulty", default="master")
     p_gen.add_argument("--level", type=float, default=None)
+    p_gen.add_argument(
+        "--density",
+        type=float,
+        default=None,
+        help="target notes per second (overrides the level/difficulty prior)",
+    )
+    p_gen.add_argument(
+        "--density-scale",
+        type=float,
+        default=None,
+        help="multiply the level/difficulty density target (e.g. 1.3)",
+    )
     p_gen.add_argument("--seed", type=int, default=0)
     p_gen.add_argument("--sr", type=int, default=22050)
     p_gen.add_argument("--timing", help="use an existing timing JSON")
@@ -162,9 +174,11 @@ def main(argv: list[str] | None = None) -> int:
     p_infer.add_argument("--stride-bars", type=int, default=None)
     p_infer.add_argument("--context-bars", type=int, default=None)
     p_infer.add_argument("--max-new-tokens", type=int, default=2048)
-    p_infer.add_argument("--temperature", type=float, default=0.0)
-    p_infer.add_argument("--top-k", type=int, default=None)
+    p_infer.add_argument("--temperature", type=float, default=0.8)
+    p_infer.add_argument("--top-k", type=int, default=20)
     p_infer.add_argument("--seed", type=int, default=0)
+    p_infer.add_argument("--bpm", type=float, default=None, help="override BPM")
+    p_infer.add_argument("--first", type=float, default=None, help="override first beat seconds")
     p_infer.add_argument("--title", default=None)
     p_infer.add_argument("--artist", default=None)
     p_infer.set_defaults(func=_cmd_ml_infer)
@@ -385,8 +399,17 @@ def _cmd_analyze(args) -> int:
 
 def _cmd_generate(args) -> int:
     from .audio.timing import TimingInfo
-    from .generate import generate_chart, maidata_for_chart
+    from .generate import RuleConfig, generate_chart, maidata_for_chart
 
+    config = None
+    if args.density is not None or args.density_scale is not None:
+        config = RuleConfig(
+            difficulty=args.difficulty,
+            level=args.level,
+            seed=args.seed,
+            target_density=args.density,
+            density_scale=args.density_scale,
+        )
     if args.timing:
         timing = TimingInfo.load(args.timing)
         if args.first is not None:
@@ -398,6 +421,7 @@ def _cmd_generate(args) -> int:
             difficulty=args.difficulty,
             level=args.level,
             seed=args.seed,
+            config=config,
             title=args.title,
             artist=args.artist,
         )
@@ -414,6 +438,7 @@ def _cmd_generate(args) -> int:
             artist=args.artist,
             bpm=args.bpm,
             first=args.first if args.first is not None else 0.0,
+            config=config,
         )
     chart = result.chart
     maidata = maidata_for_chart(
@@ -639,6 +664,8 @@ def _cmd_ml_infer(args) -> int:
         temperature=args.temperature,
         top_k=args.top_k,
         seed=args.seed,
+        bpm=args.bpm,
+        first=args.first,
         title=args.title,
         artist=args.artist,
     )

@@ -1,12 +1,23 @@
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 from mainote.audio.timing import TimingInfo
 from mainote.maidata import Chart, Duration, Event, compile_maidata, parse_file
-from mainote.maidata.model import BpmChange, TICKS_PER_BAR, TICKS_PER_BEAT
+from mainote.maidata.model import (
+    BpmChange,
+    TICKS_PER_BAR,
+    TICKS_PER_BEAT,
+    position_distance,
+)
 from mainote.maidata.validate import validate_chart
-from mainote.generate.rule import generate_chart
+from mainote.generate.rule import (
+    MAX_SIMULTANEOUS,
+    RuleConfig,
+    _choose_end,
+    generate_chart,
+)
 
 try:
     import numpy  # noqa: F401
@@ -77,6 +88,77 @@ class TestAudioPipeline(unittest.TestCase):
         a = generate_chart(timing, difficulty="expert", level=9.5, seed=42)
         b = generate_chart(timing, difficulty="expert", level=9.5, seed=42)
         self.assertEqual(a.chart.signature(), b.chart.signature())
+
+    def test_rule_layer_caps_simultaneous_notes_at_two(self):
+        timing = _synthetic_timing()
+        cases = [
+            generate_chart(timing, difficulty="master", level=13.5, seed=7),
+            generate_chart(
+                timing,
+                difficulty="master",
+                level=13.5,
+                seed=7,
+                config=RuleConfig(
+                    difficulty="master",
+                    level=13.5,
+                    seed=7,
+                    max_simultaneous=4,
+                ),
+            ),
+            generate_chart(timing, difficulty="remaster", level=14.5, seed=11),
+        ]
+        for result in cases:
+            by_tick = Counter(event.tick for event in result.chart.events)
+            self.assertLessEqual(
+                max(by_tick.values(), default=0), MAX_SIMULTANEOUS
+            )
+            self.assertLessEqual(MAX_SIMULTANEOUS, 2)
+
+    def test_slide_endpoints_follow_shape_rules(self):
+        import random
+
+        for pos in "12345678":
+            for shape in ("s", "z", "w"):
+                end = _choose_end(pos, shape, {pos}, random.Random(0))
+                self.assertEqual(position_distance(pos, end), 4)
+            for seed in range(20):
+                end = _choose_end(pos, "-", {pos}, random.Random(seed))
+                self.assertGreaterEqual(position_distance(pos, end), 2)
+
+    def test_density_scale_increases_notes(self):
+        timing = _synthetic_timing()
+        base = generate_chart(
+            timing, difficulty="master", level=13.5, seed=7
+        )
+        dense = generate_chart(
+            timing,
+            difficulty="master",
+            level=13.5,
+            seed=7,
+            config=RuleConfig(
+                difficulty="master",
+                level=13.5,
+                seed=7,
+                density_scale=1.5,
+            ),
+        )
+        self.assertGreater(dense.chart.note_count, base.chart.note_count)
+        self.assertGreater(
+            dense.profile["notes_per_second"], 0.0
+        )
+        with self.assertRaises(ValueError):
+            generate_chart(
+                timing,
+                difficulty="master",
+                level=13.5,
+                seed=7,
+                config=RuleConfig(
+                    difficulty="master",
+                    level=13.5,
+                    seed=7,
+                    density_scale=0.0,
+                ),
+            )
 
     def test_alignment_offset(self):
         from mainote.dataset.align import score_chart_against_timing

@@ -14,12 +14,24 @@
 - 难度条件：序列前缀 `DIFF_n`、`LEVEL_k`（`15+` 映射到 bucket 31）。
 - 训练循环：AdamW、warmup + cosine、AMP、梯度累积、checkpoint、resume、
   验证、early stop、JSONL metrics。
-- 语法约束的贪婪推理，输出并编译为 `maidata.txt`。
+- 训练目标：按窗口归一化的 token 交叉熵（每张谱面等权），可配置
+  `token_class_weights` 提高 type/structure/position 的权重，缓解 86% 词表是
+  时长 token 的偏置。键可以是类别（`type`、`structure`、...），也可以是精确
+  token（如 `SLIDE`、`TOUCH`、`TOUCH_HOLD`）；精确 token 优先于所属类别。
+- 验证指标：总 token accuracy + 按 token 类别（time/type/position/duration/
+  structure/flag/condition）分组的 accuracy。
+- 谱面级验证：每 N 个 epoch 在少量 val 窗口上真实解码，用 onset F1、位置/类型
+  准确率、slide 终点准确率计算 `note_score`，默认用它选择 `best.pt`。
+- 语法约束推理：默认采样解码（temperature 0.8 + top-k 20）；`temperature=0`
+  仍可贪婪解码。严格模式禁止同 tick 同位置重复、活跃 Hold 内新事件、直线
+  slide 起终点相同。
+- 手动 BPM/first 校正，以及 timing JSON 中的分段 `bpm_changes` tempo map。
+- 特征与谱面 JSON 的 LRU 缓存；超长音频窗口直接报错而不是静默中心裁剪。
 - 通过 `mainote eval` 做音符级评估（onset F1、位置/类型、时长、Slide 终点）。
 
 尚未实现：MERT/PaSST 预训练特征、辅助损失（onset / duration / 难度画像）、beam
-search 或候选重排、动态 BPM 推理、跨窗口 Hold/Slide 活跃状态、分布式训练。
-当前训练只使用 token 交叉熵。
+search 或候选重排、自动 tempo map 估计（可手动提供）、KV cache、跨窗口
+Hold/Slide 活跃状态、分布式训练。
 
 > 阶段编号采用仓库现状（P2 = 数据集/评估，P3 = 神经模型），与设计计划早期版本的
 > P2/P3 划分不同。
@@ -102,8 +114,9 @@ print("low_align", sum((r.get("alignment_confidence") or 0) < 0.5 for r in rows)
 PY
 ```
 
-如果 `val` 为空，训练会退回用 train loss 选择 checkpoint；正式训练前请创建
-真正的验证集。
+如果 `val` 为空，`note_eval` 无法运行；配置里的 `checkpoint_metric: note_score`
+会直接报错。正式训练前请创建真正的验证集，或把 `checkpoint_metric` 改为
+`val_loss`（此时会退回用 train loss 选择 checkpoint，不建议用于正式训练）。
 
 ## 4. 训练
 
@@ -133,19 +146,28 @@ python -m mainote ml train --config configs/p3_base.yaml \
 
 ```text
 config.json        # 解析后的 YAML 快照
-metrics.jsonl      # train/val loss、token accuracy、LR
+metrics.jsonl      # train/val loss、分类别 token accuracy、note eval、LR
 last.pt            # 每个 epoch
-best.pt            # 最佳验证 loss
+best.pt            # checkpoint_metric 最佳（默认 note_score）
 epoch_NNN.pt       # 每 save_every 个 epoch
 ```
 
 观察重点：
 
-- `train_loss` / `val_loss` 应该下降；train 降、val 升时增加数据或增强正则。
-- token accuracy 只是参考，不等于谱面质量；最终要看 `mainote eval` 和试听。
+- `train_loss` 是按窗口平均的加权 loss；`train_token_ce` 是未加权 token CE，
+  用于和旧实验对比。两者都应与 `val_loss` 一起看。
+- `val_class_accuracy` 中 `duration` 通常虚高（时长 token 占 86%），重点看
+  `type`、`position`、`structure`。
+- `note_eval.note_score` 是 onset F1、位置准确率、类型准确率和 slide 终点准确率
+  （有 slide 时）的平均值。它比 token accuracy 更接近真实谱面质量。
+- `note_eval` 每 `every_n_epochs` 个 epoch 在 `max_songs` 首歌、`max_windows`
+  个窗口上解码一次；窗口数越大越慢。关闭时把 `note_eval.enabled` 设为 false，
+  并把 `checkpoint_metric` 设回 `val_loss`。
+- 如果 `max_steps` 小于 `warmup_steps`，warmup 会自动截断到总步数的 10%，并在
+  启动日志中记录 `warmup_clamped_from`；短跑结果不能代表正式训练。
 - 规则 baseline 仍然是对照组：只学会密度的模型并不算更好。
-- v0 只用 token 交叉熵训练，`DIFF_n` / `LEVEL_k` 前缀不能保证目标密度或音符类型
-  比例；请在生成后用 `mainote stats` 检查，后续应加入 `L_level` 辅助损失。
+- `DIFF_n` / `LEVEL_k` 前缀不能保证目标密度或音符类型比例；请在生成后用
+  `mainote stats` 检查，后续应加入 `L_level` 辅助损失。
 
 ## 5. 推理
 
@@ -159,9 +181,12 @@ python -m mainote ml infer \
 
 可选参数：
 
-- `--timing out/timing.json` — 复用/修正 `mainote analyze` 的 BPM 和 `first`
+- `--timing out/timing.json` — 复用/修正 `mainote analyze` 的 BPM 和 `first`；
+  JSON 可额外包含 `"bpm_changes": [{"tick": 3840, "bpm": 180}, ...]`
+- `--bpm 180 --first 0.32` — 直接覆盖 BPM / 起始时间（会清空 timing 里的
+  tempo map）
 - `--features data/features/<song_id>.npz` — 复用预计算特征
-- `--temperature 0.8 --top-k 20` — 采样而不是贪婪
+- `--temperature 0` — 贪婪解码；默认是采样解码（`temperature 0.8`、`top-k 20`）
 - `--window-bars 16 --stride-bars 8 --context-bars 2`
 - `--device cuda`
 
@@ -174,8 +199,11 @@ out/p3/p3_ir.json
 out/p3/p3_summary.json
 ```
 
-推理默认使用语法约束的贪婪解码。合并后的谱面会经过校验；如果非法会写
-`p3_ir.json` / `p3_validation.json` 并报错，方便排查。
+推理默认使用语法约束的采样解码。严格语法禁止同 tick 同位置重复、活跃 Hold 内
+新事件和起终点相同的直线 slide；跨窗口重叠仍由 `_repair_events` 兜底。合并后的
+谱面会经过校验；如果非法会写 `p3_ir.json` / `p3_validation.json` 并报错，方便
+排查。若某个窗口的 mel 帧数超过 `model.max_audio_frames`，`p3_summary.json` 的
+`warnings` 会提示编码器将截断尾部音频。
 
 ## 6. 评估
 
@@ -198,10 +226,15 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 - **时长：** 1/48 拍单位，最大 2048（约 42 拍）。
 - **Slide：** 支持 single、same-start（`*`）和 connected path；track break/EX 会 token 化。
 - **音频：** 80-bin log-mel，1024 FFT，256 hop（约 86 fps），按歌归一化。
-- **模型：** Conv1d ×2 + 4 层 Transformer encoder；6 层 decoder + cross-attention；
-  token embedding；输出投影与 embedding 绑定。
-- **窗口：** 目标窗口 16 小节，stride 8，音频上下文 2 小节。v0 不把窗口开始前
-  已经活跃的 Hold/Slide 输入模型。
+- **模型 v2：** Conv1d 前端（默认总 stride 2，约 43 fps 的 encoder 时间分辨率）
+  + 4 层 pre-norm Transformer encoder（末尾 LayerNorm）；6 层 decoder +
+  cross-attention（末尾 LayerNorm）；token embedding 乘以 `sqrt(hidden)` 后再加
+  正弦位置编码，避免 PE 幅度约为 token 内容的 25 倍；输出投影与 embedding 绑定。
+- **兼容性：** v2 与 v1 checkpoint 不兼容（新增 final LayerNorm、前端结构和
+  embedding 尺度不同），必须重新训练；加载旧 checkpoint 会给出明确错误。
+- **窗口：** 目标窗口 16 小节，stride 8，音频上下文 2 小节；窗口音频超过
+  `max_audio_frames` 会报错，不会静默裁剪。v0 仍不把窗口开始前已经活跃的
+  Hold/Slide 输入模型。
 - **划分：** 只能按歌划分；同一首歌的所有难度必须在同一个 split。
 
 ## 8. 故障排查
@@ -211,11 +244,14 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 | `No module named torch` | 在 GPU 服务器安装 `.[train]` |
 | `training dataset is empty` | 检查 manifest 的 `split`、`valid`、`has_audio` 和 features |
 | `missing features for <song>` | 运行 `mainote ml prepare-features` |
-| CUDA OOM | 降低 `batch_size`、`window_bars` 或 `max_audio_frames` |
+| `exceeding max_audio_frames` | 减小 `window_bars`/`context_bars`，或同时提高 data/model 的 `max_audio_frames` |
+| CUDA OOM | `audio_stride: 2` 比 v1 更耗显存；降低 `batch_size`、`window_bars` 或改回 `audio_stride: 4`（需重训） |
 | DataLoader worker 卡住 | 设置 `train.num_workers: 0` |
 | val loss 不降 | 增加数据、降低 LR、增加 dropout、检查对齐 |
+| checkpoint 无法加载 | v1 与 v2 架构不兼容，必须用当前配置重训 |
+| `note_eval` 太慢 | 减少 `max_songs`/`max_windows`/`max_new_tokens`，或调大 `every_n_epochs` |
 | 推理校验失败 | 模型欠训练；延长训练或减小窗口，检查 `p3_ir.json` |
-| 推理太慢 | 贪婪解码是逐 token 的；用 GPU、缩短窗口，后续可加 beam/cache |
+| 推理太慢 | 解码是逐 token 的（暂无 KV cache）；用 GPU、缩短窗口，或降低 `max_new_tokens` |
 
 ## 9. 数据规模
 
@@ -231,11 +267,15 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 
 ## 10. 当前限制
 
-- 推理目前是恒定 BPM（训练特征使用谱面 tempo map）。
+- 自动 tempo map 估计尚未实现；默认仍是恒定 BPM，但可以用 `--timing` JSON 的
+  `bpm_changes` 或 `--bpm`/`--first` 手动校正。
 - 还没有 MERT/PaSST 预训练音频编码器。
-- 还没有 beam search / candidate reranking；解码只有 greedy。
-- 跨窗口的 Hold/Slide 活跃状态尚未传入模型，长音符可能被截断。
-- 训练损失只有 token 交叉熵，还没有 onset / duration / `L_level` 辅助损失。
+- 还没有 beam search / candidate reranking；默认采样，`temperature=0` 为贪婪。
+- 解码还没有 KV cache，逐 token 重跑 decoder。
+- 跨窗口的 Hold/Slide 活跃状态尚未传入模型；严格语法只在单个窗口内生效，
+  跨窗口重叠仍靠 `_repair_events` 丢弃/修补。
+- 训练损失仍是 token 交叉熵（已加权、按窗口归一化），还没有 onset / duration /
+  `L_level` 辅助损失。
 - 输入只有 80-bin log-mel；还没有 onset/beat/downbeat 辅助特征或节拍同步池化。
 - 数据增强目前只有 SpecAugment；EQ、噪声、混响、时间拉伸等尚未实现。
 - tokenizer 支持到 15+（bucket 31）；16.0 以上会 clamp 到 15+。
