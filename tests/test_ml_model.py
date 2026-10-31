@@ -36,6 +36,33 @@ class TestChartModel(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (2, 12, 100))
         self.assertGreater(model.parameter_count(), 0)
 
+    def test_initial_loss_is_near_uniform(self):
+        # Tied embeddings must start small; PyTorch's N(0, 1) default makes the
+        # first cross-entropy ~sqrt(hidden) times too large.
+        torch.manual_seed(0)
+        config = ChartModelConfig(
+            hidden=32,
+            audio_layers=1,
+            decoder_layers=1,
+            heads=4,
+            ffn=64,
+            dropout=0.0,
+            max_audio_frames=128,
+            max_tokens=64,
+            n_mels=80,
+        )
+        model = build_model(100, config, pad_id=0)
+        mel = torch.randn(2, 48, 80)
+        mel_mask = torch.zeros(2, 48, dtype=torch.bool)
+        tokens = torch.randint(1, 100, (2, 12))
+        token_mask = torch.zeros(2, 12, dtype=torch.bool)
+        with torch.no_grad():
+            logits = model(mel, mel_mask, tokens, token_mask)
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, 100), torch.randint(1, 100, (2 * 12,))
+        )
+        self.assertLess(float(loss), 10.0)
+
     def test_padding_does_not_change_valid_logits(self):
         torch.manual_seed(0)
         config = ChartModelConfig(

@@ -146,6 +146,13 @@ class ChartModel(nn.Module):
         self.token_embed = nn.Embedding(
             vocab_size, config.hidden, padding_idx=self.pad_id
         )
+        # The embedding is tied to the output projection.  PyTorch's default
+        # N(0, 1) init makes initial logits ~sqrt(hidden) times too large
+        # (cross-entropy starts around 250 instead of ~ln(vocab)).  Use the
+        # standard small init so training starts from a near-uniform model.
+        nn.init.normal_(self.token_embed.weight, mean=0.0, std=0.02)
+        with torch.no_grad():
+            self.token_embed.weight[self.pad_id].zero_()
         self.token_pos = PositionalEncoding(config.hidden, config.max_tokens, config.dropout)
         layer = nn.TransformerDecoderLayer(
             d_model=config.hidden,

@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaiForge Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ff8a4c'/%3E%3Cstop offset='1' stop-color='%23ff4d8d'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M16 46V18h7l9 15 9-15h7v28h-7V30l-9 14-9-14v16z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+  <div class="bg-glow bg-glow-a"></div>
+  <div class="bg-glow bg-glow-b"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">M</div>
+      <div class="brand-copy">
+        <h1>MaiForge <span>Studio</span></h1>
+        <p>audio → event IR → maidata</p>
+      </div>
+    </div>
+    <div class="top-status">
+      <div id="gpuPill" class="pill muted">GPU 检测中…</div>
+      <div id="jobPill" class="pill idle">IDLE</div>
+      <button id="refreshBtn" class="btn ghost small" type="button">刷新</button>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="工作区">
+    <button class="tab active" data-tab="train" type="button">训练</button>
+    <button class="tab" data-tab="infer" type="button">推理</button>
+    <button class="tab" data-tab="runs" type="button">运行记录</button>
+    <div class="tabs-spacer"></div>
+    <div id="overviewPill" class="pill muted">数据加载中…</div>
+  </nav>
+
+  <main class="layout">
+    <div class="content">
+
+      <!-- ================= TRAIN ================= -->
+      <section id="tab-train" class="tab-panel active">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>训练控制</h2>
+              <p>启动 P3 事件模型训练，实时查看 epoch、loss 与日志。</p>
+            </div>
+            <span class="badge">P3 · Transformer</span>
+          </div>
+
+          <form id="trainForm" class="form-grid" autocomplete="off">
+            <label class="field span-2">
+              <span>配置文件</span>
+              <select id="trainConfig"></select>
+            </label>
+            <label class="field">
+              <span>设备</span>
+              <select id="trainDevice">
+                <option value="cuda">cuda</option>
+                <option value="auto">auto</option>
+                <option value="cpu">cpu</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>输出目录</span>
+              <input id="trainOutput" type="text" placeholder="runs/web_train">
+            </label>
+            <label class="field span-2">
+              <span>恢复训练（可选）</span>
+              <select id="trainResume"></select>
+            </label>
+            <label class="field">
+              <span>max steps（可选）</span>
+              <input id="trainMaxSteps" type="number" min="1" placeholder="留空 = 按 epochs">
+            </label>
+            <label class="field">
+              <span>DataLoader workers</span>
+              <input id="trainWorkers" type="number" min="0" placeholder="留空 = 配置默认">
+            </label>
+            <label class="field checkbox-field span-2">
+              <input id="trainDry" type="checkbox">
+              <span>dry-run（只跑一个 batch，验证模型/显存）</span>
+            </label>
+          </form>
+
+          <div class="actions">
+            <button id="trainStart" class="btn primary" type="button">开始训练</button>
+            <button id="trainStop" class="btn danger" type="button" disabled>停止</button>
+            <span class="hint">同一时间只允许一个训练/推理任务。</span>
+          </div>
+        </div>
+
+        <div class="panel subtle">
+          <div class="mini-head">
+            <h3>数据集概览</h3>
+            <span class="muted small">来自 data/samples 与 data/features</span>
+          </div>
+          <div id="datasetOverview" class="stat-strip">
+            <div class="stat"><span>歌曲</span><strong>—</strong></div>
+            <div class="stat"><span>谱面</span><strong>—</strong></div>
+            <div class="stat"><span>特征</span><strong>—</strong></div>
+            <div class="stat"><span>训练/验证/测试</span><strong>—</strong></div>
+          </div>
+          <p class="note">
+            提示：推理建议使用采样解码（temperature &gt; 0）。greedy 容易把 slide/touch 塌缩成 tap。
+          </p>
+        </div>
+      </section>
+
+      <!-- ================= INFER ================= -->
+      <section id="tab-infer" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>推理控制</h2>
+              <p>选择音频与 checkpoint，生成 maidata 并直接试听/校验。</p>
+            </div>
+            <span class="badge cyan">audio → chart</span>
+          </div>
+
+          <form id="inferForm" class="form-grid" autocomplete="off">
+            <label class="field span-2">
+              <span>音频文件</span>
+              <input id="inferAudio" list="audioOptions" type="text" placeholder="选择或输入音频路径">
+              <datalist id="audioOptions"></datalist>
+            </label>
+            <label class="field span-2">
+              <span>Checkpoint</span>
+              <select id="inferCheckpoint"></select>
+            </label>
+            <label class="field">
+              <span>Timing（可选）</span>
+              <select id="inferTiming"></select>
+            </label>
+            <label class="field">
+              <span>Features（可选）</span>
+              <select id="inferFeatures"></select>
+            </label>
+            <label class="field">
+              <span>难度</span>
+              <select id="inferDifficulty">
+                <option value="basic">basic</option>
+                <option value="advanced">advanced</option>
+                <option value="expert">expert</option>
+                <option value="master" selected>master</option>
+                <option value="remaster">remaster</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>等级</span>
+              <input id="inferLevel" type="number" min="1" max="15" step="0.1" value="13.5">
+            </label>
+            <label class="field">
+              <span>Temperature</span>
+              <input id="inferTemperature" type="number" min="0" max="2" step="0.05" value="0.8">
+            </label>
+            <label class="field">
+              <span>Top-k</span>
+              <input id="inferTopK" type="number" min="1" step="1" value="20">
+            </label>
+            <label class="field">
+              <span>设备</span>
+              <select id="inferDevice">
+                <option value="cuda">cuda</option>
+                <option value="auto">auto</option>
+                <option value="cpu">cpu</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>输出目录</span>
+              <input id="inferOutput" type="text" placeholder="out/web_infer">
+            </label>
+            <label class="field">
+              <span>max new tokens</span>
+              <input id="inferMaxTokens" type="number" min="64" step="64" placeholder="2048">
+            </label>
+          </form>
+
+          <div class="actions">
+            <button id="inferStart" class="btn primary" type="button">开始推理</button>
+            <button id="inferStop" class="btn danger" type="button" disabled>停止</button>
+            <span class="hint">采样解码更稳定；greedy 请把 temperature 设为 0。</span>
+          </div>
+        </div>
+
+        <div id="inferResult" class="panel result-panel hidden">
+          <div class="panel-head">
+            <div>
+              <h2 id="resultTitle">生成结果</h2>
+              <p id="resultMeta">—</p>
+            </div>
+            <span id="resultValidation" class="badge">—</span>
+          </div>
+
+          <div class="result-grid">
+            <div class="result-main">
+              <div id="resultTypeBars" class="type-bars"></div>
+              <audio id="resultAudio" class="audio-player" controls preload="none"></audio>
+              <div id="resultLinks" class="link-row"></div>
+            </div>
+            <div class="result-side">
+              <div class="stat-strip vertical">
+                <div class="stat"><span>音符</span><strong id="resultNotes">—</strong></div>
+                <div class="stat"><span>notes/s</span><strong id="resultNps">—</strong></div>
+                <div class="stat"><span>max sim</span><strong id="resultMaxSim">—</strong></div>
+                <div class="stat"><span>最细分割</span><strong id="resultDiv">—</strong></div>
+              </div>
+            </div>
+          </div>
+
+          <details class="preview">
+            <summary>maidata 预览</summary>
+            <pre id="resultPreview"></pre>
+          </details>
+        </div>
+      </section>
+
+      <!-- ================= RUNS ================= -->
+      <section id="tab-runs" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>运行记录</h2>
+              <p>浏览 runs/ 下的 checkpoint、metrics 与产物。</p>
+            </div>
+            <button id="runsRefresh" class="btn ghost small" type="button">刷新列表</button>
+          </div>
+          <div id="runsList" class="runs-list"></div>
+        </div>
+
+        <div id="runDetail" class="panel hidden">
+          <div class="panel-head">
+            <div>
+              <h2 id="runDetailTitle">—</h2>
+              <p id="runDetailMeta">—</p>
+            </div>
+            <button id="runUseBest" class="btn ghost small" type="button">用 best.pt 推理</button>
+          </div>
+          <canvas id="runCanvas" class="chart-canvas" height="220"></canvas>
+          <div class="run-files">
+            <div>
+              <h3>Checkpoint</h3>
+              <div id="runCheckpoints" class="file-list"></div>
+            </div>
+            <div>
+              <h3>产物</h3>
+              <div id="runFiles" class="file-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= MONITOR ================= -->
+    <aside class="monitor panel">
+      <div class="monitor-head">
+        <div>
+          <h2>任务监视器</h2>
+          <p id="monitorKind">当前没有任务</p>
+        </div>
+        <span id="monitorStatus" class="pill idle">IDLE</span>
+      </div>
+
+      <div class="monitor-meta">
+        <div class="meta-row"><span>耗时</span><strong id="monitorElapsed">—</strong></div>
+        <div class="meta-row"><span>输出</span><strong id="monitorOutput" class="mono ellipsis">—</strong></div>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-label">
+          <span id="monitorProgressText">等待任务</span>
+          <span id="monitorProgressPct"></span>
+        </div>
+        <div class="progress"><div id="monitorProgressBar" class="progress-bar"></div></div>
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric"><span>epoch</span><strong id="mEpoch">—</strong></div>
+        <div class="metric"><span>step</span><strong id="mStep">—</strong></div>
+        <div class="metric"><span>train loss</span><strong id="mTrainLoss">—</strong></div>
+        <div class="metric"><span>val loss</span><strong id="mValLoss">—</strong></div>
+        <div class="metric"><span>train acc</span><strong id="mTrainAcc">—</strong></div>
+        <div class="metric"><span>val acc</span><strong id="mValAcc">—</strong></div>
+        <div class="metric"><span>lr</span><strong id="mLr">—</strong></div>
+        <div class="metric"><span>best val</span><strong id="mBest">—</strong></div>
+      </div>
+
+      <div class="chart-wrap">
+        <canvas id="lossCanvas" class="chart-canvas" height="220"></canvas>
+        <div id="lossEmpty" class="chart-empty">metrics 出现后显示 loss 曲线</div>
+      </div>
+
+      <div class="log-head">
+        <h3>实时日志</h3>
+        <div class="log-tools">
+          <label class="check-inline"><input id="logAuto" type="checkbox" checked> 自动滚动</label>
+          <button id="logDownload" class="btn tiny ghost" type="button">下载日志</button>
+        </div>
+      </div>
+      <pre id="logPre" class="log-console">等待任务…</pre>
+
+      <details class="command-box">
+        <summary>启动命令</summary>
+        <pre id="monitorCommand">—</pre>
+      </details>
+    </aside>
+  </main>
+
+  <div id="toasts" class="toasts"></div>
+</body>
+</html>

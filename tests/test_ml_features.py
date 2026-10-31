@@ -58,10 +58,10 @@ class TestMelFeatures(unittest.TestCase):
             )
             self.assertEqual(summary["written"], 1)
             self.assertTrue((out / "song.npz").exists())
-            data = np.load(out / "song.npz")
-            self.assertEqual(tuple(data["mel"].shape[1:]), (40,))
-            self.assertAlmostEqual(float(data["fps"]), sr / 256)
-            self.assertTrue(np.isfinite(data["mel"]).all())
+            with np.load(out / "song.npz") as data:
+                self.assertEqual(tuple(data["mel"].shape[1:]), (40,))
+                self.assertAlmostEqual(float(data["fps"]), sr / 256)
+                self.assertTrue(np.isfinite(data["mel"]).all())
 
 
 if __name__ == "__main__":

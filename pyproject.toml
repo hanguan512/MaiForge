@@ -21,6 +21,9 @@ train = [
   "pyyaml>=6",
   "numpy>=1.26",
 ]
+web = [
+  "flask>=3.0",
+]
 dev = ["pytest>=8"]
 
 [project.scripts]
@@ -28,3 +31,6 @@ mainote = "mainote.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"mainote.webapp" = ["templates/*.html", "static/*"]

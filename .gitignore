@@ -7,6 +7,11 @@ __pycache__/
 build/
 dist/
 
+# Local chart downloads (dataset/xxdw/maidata is the committed fixture)
+dataset/*/bg.png
+dataset/*/pv.mp4
+dataset/*/maidata.txt
+
 # Generated / local data
 data/raw/
 data/processed/

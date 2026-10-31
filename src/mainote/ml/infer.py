@@ -107,12 +107,18 @@ def infer(
 
     events: list[Event] = []
     warnings: list[str] = []
+    covered_until_tick = 0
     for start in range(start_bar, end_bar, stride_bars):
         if start >= max_bar:
             break
         win_end_bar = min(start + window_bars, max_bar)
         start_tick = start * TICKS_PER_BAR
         end_tick = win_end_bar * TICKS_PER_BAR
+        # Skip windows whose full range was already covered by earlier ones.
+        # The actual coverage is determined after decoding, not by the nominal
+        # window length: a model may emit EOS before reaching ``end_tick``.
+        if covered_until_tick >= end_tick:
+            continue
         context_start_tick = max(0, start_tick - context_bars * TICKS_PER_BAR)
         context_end_tick = min(max_tick, end_tick + context_bars * TICKS_PER_BAR)
         a = max(
@@ -137,7 +143,7 @@ def infer(
         mel_tensor = torch.from_numpy(window).float().unsqueeze(0).to(device)
         mel_mask = torch.zeros((1, window.shape[0]), dtype=torch.bool, device=device)
         try:
-            _, parsed = greedy_decode(
+            ids, parsed = greedy_decode(
                 model,
                 mel_tensor,
                 mel_mask,
@@ -157,11 +163,26 @@ def infer(
             warnings.append(
                 f"window {start}: incomplete sequence, kept {len(parsed.events)} events"
             )
+        # Count BAR advances in the generated sequence.  If the model emitted
+        # EOS at bar 5 of a 16-bar window, only those 6 bars are safe to merge;
+        # the next overlapping window must be allowed to fill the remainder.
+        bar_count = sum(
+            1 for token_id in ids if vocab.id_to_token[token_id] == "BAR"
+        )
+        generated_bars = bar_count + 1 if (bar_count or parsed.events) else 0
+        generated_bars = max(0, min(win_end_bar - start, generated_bars))
+        generated_end_tick = start_tick + generated_bars * TICKS_PER_BAR
+        if generated_end_tick < end_tick:
+            warnings.append(
+                f"window {start}: generated {generated_bars}/{win_end_bar - start} bars"
+            )
+        keep_start_tick = max(start_tick, covered_until_tick)
         for event in parsed.events:
             absolute_tick = event.tick + start_tick
-            if start_tick <= absolute_tick < end_tick:
+            if keep_start_tick <= absolute_tick < generated_end_tick:
                 event.tick = absolute_tick
                 events.append(event)
+        covered_until_tick = max(covered_until_tick, generated_end_tick)
         print(
             json.dumps(
                 {
@@ -248,14 +269,15 @@ def _load_or_compute_mel(
     n_mels: int,
 ) -> tuple[np.ndarray, float]:
     if features_path:
-        data = np.load(features_path, allow_pickle=False)
-        mel = np.asarray(data["mel"], dtype=np.float32)
-        stored_mels = int(data["n_mels"]) if "n_mels" in data else mel.shape[1]
+        with np.load(features_path, allow_pickle=False) as data:
+            mel = np.asarray(data["mel"], dtype=np.float32)
+            stored_mels = int(data["n_mels"]) if "n_mels" in data else mel.shape[1]
+            fps = float(data["fps"])
         if stored_mels != n_mels:
             raise ValueError(
                 f"feature n_mels={stored_mels} does not match model n_mels={n_mels}"
             )
-        return mel, float(data["fps"])
+        return mel, fps
     from ..audio.io import load_audio
 
     audio = load_audio(audio_path)
@@ -336,12 +358,19 @@ def _repair_events(events: list[Event]) -> tuple[list[Event], list[str]]:
             if not event.slide:
                 warnings.append(f"dropped empty slide at tick {event.tick}")
                 continue
+            previous_end = event.position
             for segment in event.slide:
-                if segment.shape == "-" and segment.end == event.position:
-                    segment.end = "5" if event.position != "5" else "1"
+                segment_start = (
+                    event.position
+                    if event.chain_type == "same_start"
+                    else previous_end
+                )
+                if segment.shape == "-" and segment.end == segment_start:
+                    segment.end = "5" if segment_start != "5" else "1"
                     warnings.append(
                         f"fixed straight slide at tick {event.tick} to end {segment.end}"
                     )
+                previous_end = segment.end
         seen.add(key)
         out.append(event)
     return out, warnings

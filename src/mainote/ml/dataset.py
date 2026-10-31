@@ -195,9 +195,9 @@ class ChartWindowDataset(Dataset):
                 f"missing features for {song_id}: {path}. "
                 "Run `mainote ml prepare-features <processed_dir> --out <features_dir>`."
             )
-        data = np.load(path, allow_pickle=False)
-        mel = np.asarray(data["mel"], dtype=np.float32)
-        fps = float(data["fps"])
+        with np.load(path, allow_pickle=False) as data:
+            mel = np.asarray(data["mel"], dtype=np.float32)
+            fps = float(data["fps"])
         self._cache[song_id] = (mel, fps)
         while len(self._cache) > 8:
             self._cache.popitem(last=False)
