@@ -1,0 +1,8 @@
+# Development/test environment: everything above plus pytest.
+#
+# Usage (from the repository root):
+#   python -m pip install -r requirements-dev.txt
+#
+# The frontend source under `web/` is separate; install Node.js 18+ and run
+# `npm ci` there only if you need to rebuild the committed static bundle.
+-e .[audio,web,train,dev]

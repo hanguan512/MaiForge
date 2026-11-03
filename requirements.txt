@@ -1,0 +1,8 @@
+# Local Web UI + audio/dataset tooling (no PyTorch).
+#
+# Usage (from the repository root):
+#   python -m pip install -r requirements.txt
+#
+# This installs the project in editable mode with the `audio` and `web`
+# extras, so the `mainote` command is available after activation.
+-e .[audio,web]

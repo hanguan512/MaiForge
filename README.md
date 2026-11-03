@@ -44,6 +44,129 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 
 本仓库中没有任何已训练的神经模型检查点。当前的默认生成器仍是规则基线：它会跟随检测到的起音/节拍和目标难度画像，但并不理解旋律或谱面风格。P3 代码位于 `src/mainote/ml/`，训练方法见 [`docs/TRAINING.md`](docs/TRAINING.md)。P3 v0 仍缺少辅助损失、beam/候选重排、跨窗口状态和动态 BPM；在留出歌曲上稳定超过规则基线之前，不会设为默认生成器。
 
+## 快速启动（Web UI）
+
+> 想在 Jupyter 里直接操作，可以打开 [`notebooks/quickstart_linux.ipynb`](notebooks/quickstart_linux.ipynb)：按顺序运行单元格即可完成安装依赖、启动 Web UI、健康检查和停止服务（Linux）。
+
+### 0. 环境要求
+
+- **Python 3.11+**
+- **ffmpeg**：音频分析、预览和带对齐的数据集导入需要
+- **Node.js 18+（可选）**：只有修改 `web/` 前端源码或重新构建静态资源时才需要；仓库已经提交了构建后的 `src/mainote/webapp/static/`
+- **PyTorch（仅训练/推理需要）**：训练建议使用 NVIDIA GPU + CUDA 版 PyTorch；推理可以用 CPU，但会慢很多。见 [`requirements-train.txt`](requirements-train.txt)
+
+### 1. 安装依赖
+
+Linux / macOS：
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+Windows PowerShell：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+如果 PowerShell 阻止执行激活脚本，先运行 `Set-ExecutionPolicy -Scope Process Bypass`，再执行 `.venv\Scripts\Activate.ps1`。
+
+`requirements.txt` 会以 editable 方式安装 `.[audio,web]`，包含 Web 服务、音频/数据集工具和在线谱库所需依赖。国内网络如果 pip 解析很慢，可以加镜像：
+
+```bash
+python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+ffmpeg 安装：
+
+- Debian / Ubuntu：`sudo apt install ffmpeg`
+- macOS：`brew install ffmpeg`
+- Windows：`winget install Gyan.FFmpeg`，或从 [ffmpeg.org](https://ffmpeg.org/download.html) 下载后把 `bin` 加入 `PATH`
+
+### 2. 启动服务
+
+在仓库根目录、虚拟环境已激活的情况下：
+
+```bash
+mainote web
+```
+
+默认地址是 **http://127.0.0.1:8765**。常用参数：
+
+```bash
+mainote web --no-browser        # 不自动打开浏览器
+mainote web --port 9000         # 换端口
+mainote web --host 0.0.0.0      # 允许局域网访问（服务没有登录鉴权，只建议在可信网络使用）
+```
+
+按 `Ctrl+C` 停止服务。
+
+如果 `mainote` 命令不在 `PATH` 中（例如没有激活虚拟环境）：
+
+```bash
+.venv/bin/mainote web
+# 或者
+PYTHONPATH=src .venv/bin/python -m mainote web
+```
+
+### 3. 第一次使用
+
+1. 打开 http://127.0.0.1:8765。
+2. 进入 **数据集** 页面：
+   - 从 AWMC-MaiArchive 在线检索并导入谱面；
+   - 或上传本地 zip（一个 zip = 一首歌，内含 `track.*` 和 `maidata`）。
+3. 如果还没有数据，可以先跑合成演示：
+
+   ```bash
+   PYTHONPATH=src .venv/bin/python scripts/make_demo.py out/demo
+   ```
+
+   刷新页面后选择“全部曲库”，`out/demo/processed` 是默认浏览目录之一。
+4. **推理** 页面需要一个 P3 checkpoint；仓库不附带已训练权重。
+5. **训练** 页面需要先安装训练依赖：
+
+   ```bash
+   python -m pip install -r requirements-train.txt
+   ```
+
+   然后在训练页勾选歌曲，按提示导出样本/log-mel 特征并启动训练。训练建议在 GPU 服务器上进行，完整流程见 [`docs/TRAINING.md`](docs/TRAINING.md)。
+
+### 4. 前端开发（可选）
+
+只有修改 `web/` 下的 React 源码时才需要：
+
+```bash
+cd web
+npm ci                # 国内网络可加 --registry=https://registry.npmmirror.com
+npm run dev           # http://127.0.0.1:5173，/api 代理到 8765
+```
+
+修改完成后构建回后端静态目录：
+
+```bash
+npm run build         # 输出到 src/mainote/webapp/static/
+```
+
+不要手动编辑 `src/mainote/webapp/static/`。
+
+### 5. 常见启动问题
+
+| 现象 | 处理 |
+|---|---|
+| `mainote: command not found` | 激活虚拟环境，或使用 `.venv/bin/mainote web` / `PYTHONPATH=src .venv/bin/python -m mainote web` |
+| `No module named fastapi` / `uvicorn` | 确认执行过 `python -m pip install -r requirements.txt` |
+| `ffmpeg: command not found` | 安装 ffmpeg 并确认它在 `PATH` 中；音频分析和带对齐导入会用到 |
+| `Address already in use` | 换端口：`mainote web --port 9000` |
+| 页面空白或提示前端未构建 | `cd web && npm ci && npm run build`，然后重启后端 |
+| 数据集页没有歌曲 | 先在线导入/上传 zip，或运行上面的 `scripts/make_demo.py` |
+| 训练页启动失败 | 需要 `python -m pip install -r requirements-train.txt`，并且数据集已导出样本和 log-mel 特征 |
+
 ## 快速开始
 
 ### P0 工具链（无第三方依赖）
@@ -64,7 +187,9 @@ PYTHONPATH=src python3 -m mainote eval dataset/xxdw/maidata dataset/xxdw/maidata
 PYTHONPATH=src python3 -m mainote compile out/sample.ir.json -o out/roundtrip.txt
 ```
 
-### 完整环境
+### 音频 / 数据集 CLI 环境
+
+如果你只需要命令行工具、不需要 Web UI：
 
 ```bash
 python3 -m venv .venv
@@ -110,12 +235,18 @@ PYTHONPATH=src .venv/bin/python scripts/make_demo.py out/demo
 ## 本地 Web UI
 
 Web UI 由 FastAPI 后端（`src/mainote/webapp/`）和 React + MUI 前端（`web/`）组成，
-默认只监听 `127.0.0.1`。安装 Web 依赖并启动：
+默认只监听 `127.0.0.1`。安装和启动步骤见上面的 [快速启动（Web UI）](#快速启动web-ui)：
 
 ```bash
-pip install -e '.[web]'
+python -m pip install -r requirements.txt
 mainote web                 # http://127.0.0.1:8765,自动打开浏览器
 mainote web --no-browser --port 9000
+```
+
+训练页还需要 `requirements-train.txt`（PyTorch）：
+
+```bash
+python -m pip install -r requirements-train.txt
 ```
 
 功能：
@@ -145,7 +276,7 @@ mainote web --no-browser --port 9000
 
 ```bash
 cd web
-npm install          # 国内网络可加 --registry=https://registry.npmmirror.com
+npm ci               # 国内网络可加 --registry=https://registry.npmmirror.com
 npm run dev          # http://127.0.0.1:5173, /api 与 /majdataview 代理到 8765
 npm run build        # 产物写入 src/mainote/webapp/static
 ```
@@ -263,11 +394,14 @@ data/samples/
 
 ## P3 神经模型训练
 
-P3 需要 PyTorch 和 GPU。安装训练依赖：
+P3 需要 PyTorch 和 GPU。在已经安装 Web/音频依赖的基础上，安装训练依赖：
 
 ```bash
-pip install -e '.[audio,train]' -i https://pypi.org/simple
+python -m pip install -r requirements-train.txt
+# 等价于：python -m pip install -e '.[audio,web,train]'
 ```
+
+如果是 NVIDIA GPU，建议先按 [PyTorch 官网](https://pytorch.org/get-started/locally/) 安装对应 CUDA 版本的 `torch`，再执行上面的命令；`requirements-train.txt` 不会覆盖已满足的 `torch>=2.2`。
 
 预计算 log-mel 特征，然后训练：
 
@@ -317,6 +451,7 @@ src/mainote/
 web/            React + MUI + Vite 前端源码
 configs/        训练配置
 docs/           训练和开发文档
+notebooks/      Jupyter 快速启动（Linux Web UI）
 tests/          标准库 unittest 测试集
 scripts/        演示辅助脚本
 dataset/xxdw/   提交到仓库的 maidata 测试样本（4 张谱面，BPM 143，无音频）
@@ -349,7 +484,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 PYTHONPATH=src python3 -m unittest tests.test_parser.TestTokenSyntax.test_path_chain -v
 ```
 
-测试集目前共有 154 个测试。项目没有单独的 lint/typecheck/CI 配置；`python3 -m compileall -q src tests scripts` 和 `cd web && npm run typecheck` 是有用的快速检查。
+测试集目前共有 169 个测试。项目没有单独的 lint/typecheck/CI 配置；`python3 -m compileall -q src tests scripts` 和 `cd web && npm run typecheck` 是有用的快速检查。
 
 ## 路线图
 

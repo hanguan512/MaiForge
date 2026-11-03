@@ -26,7 +26,9 @@
   仍可贪婪解码。严格模式禁止同 tick 同位置重复、活跃 Hold 内新事件、直线
   slide 起终点相同。
 - 手动 BPM/first 校正，以及 timing JSON 中的分段 `bpm_changes` tempo map。
-- 特征与谱面 JSON 的 LRU 缓存；超长音频窗口直接报错而不是静默中心裁剪。
+- 特征与谱面 JSON 的 LRU 缓存；构造数据集时过滤超长音频、缺失特征和超出
+  `model.max_tokens` 的窗口，并在训练启动日志中报告跳过原因，而不是在
+  DataLoader worker 里中途崩溃。
 - 通过 `mainote eval` 做音符级评估（onset F1、位置/类型、时长、Slide 终点）。
 
 尚未实现：MERT/PaSST 预训练特征、辅助损失（onset / duration / 难度画像）、beam
@@ -44,7 +46,8 @@ cd MaiForge
 
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e '.[audio,train]' -i https://pypi.org/simple
+python -m pip install -r requirements-train.txt
+# 等价于：python -m pip install -e '.[audio,web,train]'
 ```
 
 要求：
@@ -188,8 +191,9 @@ epoch_NNN.pt       # 每 save_every 个 epoch
 - `note_eval.note_score` 是 onset F1、位置准确率、类型准确率和 slide 终点准确率
   （有 slide 时）的平均值。它比 token accuracy 更接近真实谱面质量。
 - `note_eval` 每 `every_n_epochs` 个 epoch 在 `max_songs` 首歌、`max_windows`
-  个窗口上解码一次；窗口数越大越慢。关闭时把 `note_eval.enabled` 设为 false，
-  并把 `checkpoint_metric` 设回 `val_loss`。
+  个窗口上解码一次；窗口数越大越慢。默认是 4 首歌 × 8 个窗口，且每个窗口的
+  解码预算会按参考 token 数动态收紧（最多 `max_new_tokens`）。关闭时把
+  `note_eval.enabled` 设为 false，并把 `checkpoint_metric` 设回 `val_loss`。
 - 如果 `max_steps` 小于 `warmup_steps`，warmup 会自动截断到总步数的 10%，并在
   启动日志中记录 `warmup_clamped_from`；短跑结果不能代表正式训练。
 - 规则 baseline 仍然是对照组：只学会密度的模型并不算更好。

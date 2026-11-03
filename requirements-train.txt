@@ -1,0 +1,9 @@
+# Web UI + audio + P3 training/inference (PyTorch).
+#
+# Usage (from the repository root, preferably in a GPU environment):
+#   python -m pip install -r requirements-train.txt
+#
+# For a specific CUDA build, install the matching torch wheel first (see
+# https://pytorch.org/get-started/locally/), then run this file; pip will keep
+# the already-installed torch if it satisfies `torch>=2.2`.
+-e .[audio,web,train]

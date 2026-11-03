@@ -22,6 +22,9 @@ train = [
   "numpy>=1.26",
 ]
 web = [
+  "numpy>=1.26",
+  "mutagen>=1.47",
+  "pyyaml>=6",
   "fastapi>=0.110",
   "uvicorn>=0.29",
   "python-multipart>=0.0.9",

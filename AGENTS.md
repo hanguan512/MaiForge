@@ -10,7 +10,7 @@
 
 ## Commands
 - P0 has no third-party deps: `PYTHONPATH=src python3 -m mainote validate|stats|roundtrip|parse|compile|eval ...`
-- Full test suite (audio tests need numpy; web tests need `.[web]`): `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v` (154 tests).
+- Full test suite (audio tests need numpy; web tests need `.[web]`): `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v` (169 tests).
 - P0-only tests: `PYTHONPATH=src python3 -m unittest discover -s tests` (numpy/torch/web-extra tests skip).
 - Single test: `PYTHONPATH=src python3 -m unittest tests.test_parser.TestTokenSyntax.test_path_chain -v`
 - Online catalogue from the CLI: `mainote dataset fetch-wmc -q Apollo --limit 5` or `--id 011661`; downloads cache under `out/wmc-cache/`, imports into `data/raw/wmc_<id>/` + `data/processed/wmc_<id>/`. Use `--dry-run`, `--align`, `--include-video`, `--force`, `--delay`.
@@ -19,7 +19,7 @@
 - P3 commands (on a GPU server with `.[audio,train]`):
   `mainote ml prepare-features ... [--songs a,b]`, `mainote ml prepare-data <processed_dir> --songs a,b`, `mainote ml train --config configs/p3_base.yaml`, `mainote ml infer --checkpoint ... --audio ... -o ...`.
 - P3 needs `torch`/`pyyaml` (the `train` extra). This workspace has CPU-only PyTorch for smoke tests; use a GPU server for real training.
-- Web UI: `pip install -e '.[web]'` then `mainote web [--host 127.0.0.1] [--port 8765] [--no-browser]`. Frontend dev: `cd web && npm run dev` (Vite 5173 proxies `/api` to 8765); `npm run build` writes `src/mainote/webapp/static/` and runs `tsc --noEmit` first.
+- Web UI: `pip install -r requirements.txt` then `mainote web [--host 127.0.0.1] [--port 8765] [--no-browser]`. Frontend dev: `cd web && npm run dev` (Vite 5173 proxies `/api` to 8765); `npm run build` writes `src/mainote/webapp/static/` and runs `tsc --noEmit` first.
 - No lint/typecheck/CI config; verify with unittest plus `PYTHONPATH=src python3 -m compileall -q src tests scripts` and `cd web && npm run typecheck`.
 - If pip cannot resolve packages, use a domestic mirror, e.g. `-i https://pypi.tuna.tsinghua.edu.cn/simple`; for npm use `--registry=https://registry.npmmirror.com`.
 
@@ -34,6 +34,7 @@
 - `src/mainote/webapp/`: FastAPI app (`app.py`), dataset catalog/chart serialization (`catalog.py`), one-at-a-time subprocess jobs (`jobs.py`), zip dataset import (`datasets.py`), background online-catalogue import jobs (`wmc.py`), option/run scanners (`options.py`), path allow-listing (`settings.py`), training data selection/config overrides (`training.py`), torch-free model layer descriptions (`architecture.py`), MajdataView audio helpers (`viewer.py`), the vendored MajdataView WebGL build plus its bridge (`majdataview/`), and built frontend assets (`static/`).
 - `web/`: React 18 + MUI 6 + Vite + TypeScript frontend (`src/pages`, `src/components`, `src/api.ts`, `src/types.ts`). `npm run build` writes into `src/mainote/webapp/static/`.
 - `docs/TRAINING.md`: server data prep, training, inference, evaluation, troubleshooting.
+- `notebooks/quickstart_linux.ipynb`: Linux Jupyter quickstart; creates `.venv`, installs `requirements.txt`, starts/stops the Web UI in the background and checks `/api/health`.
 - `tests/`: stdlib `unittest`, not pytest.
 
 ## Dataset / training samples
