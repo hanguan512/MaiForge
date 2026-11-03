@@ -64,6 +64,37 @@ class TestEval(unittest.TestCase):
         self.assertLess(result["onset"]["precision"], 1.0)
         self.assertEqual(result["onset"]["recall"], 1.0)
 
+    def test_outer_chords_are_reported_separately_from_touch_swipes(self):
+        ref_events = [Event(tick=0, kind="tap", position="1")]
+        pred_events = [
+            Event(tick=0, kind="tap", position="1"),
+            Event(tick=0, kind="tap", position="2"),
+            Event(tick=0, kind="tap", position="3"),
+            # Touch swipes are one gesture and must not count as a 3-way chord.
+            Event(tick=0, kind="touch", position="A1"),
+            Event(tick=0, kind="touch", position="A2"),
+        ]
+        ref = Chart(
+            index=5,
+            initial_bpm=120,
+            events=ref_events,
+            bpm_changes=[BpmChange(0, 120)],
+            end_tick=TICKS_PER_BAR,
+        )
+        pred = Chart(
+            index=5,
+            initial_bpm=120,
+            events=pred_events,
+            bpm_changes=[BpmChange(0, 120)],
+            end_tick=TICKS_PER_BAR,
+        )
+        result = evaluate_chart(pred, ref)
+        self.assertEqual(result["stats"]["max_simultaneous"]["predicted"], 5)
+        self.assertEqual(result["chord"]["predicted_max_outer"], 3)
+        self.assertEqual(result["chord"]["predicted_excess_ticks"], 1)
+        self.assertEqual(result["chord"]["predicted_outer_ticks"], 1)
+        self.assertEqual(result["chord"]["predicted_excess_rate"], 1.0)
+
 
 class TestTempoMap(unittest.TestCase):
     def test_seconds_and_ticks_roundtrip_with_tempo_changes(self):

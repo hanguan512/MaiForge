@@ -19,6 +19,8 @@ class TestStats(unittest.TestCase):
         self.assertEqual(stats["notes_total"], 171)
         self.assertAlmostEqual(stats["notes_per_second"], 1.178, places=3)
         self.assertEqual(stats["max_simultaneous"], 2)
+        self.assertEqual(stats["max_outer_simultaneous"], 2)
+        self.assertEqual(stats["outer_chord_excess_ticks"], 0)
         self.assertEqual(stats["divisions"], [1, 2, 4])
         self.assertEqual(stats["counts"]["tap"], 141)
         self.assertEqual(stats["counts"]["hold"], 18)
@@ -32,6 +34,9 @@ class TestStats(unittest.TestCase):
         self.assertEqual(stats["notes_total_wiki"], 649)
         self.assertEqual(stats["slide_segments"], 90)
         self.assertEqual(stats["max_simultaneous"], 12)
+        # The 12-way tick is a touch swipe; outer-button chords stay at 2.
+        self.assertEqual(stats["max_outer_simultaneous"], 2)
+        self.assertEqual(stats["outer_chord_excess_ticks"], 0)
         self.assertEqual(stats["touch_count"], 110)
         self.assertEqual(stats["finest_division"], 64)
         self.assertAlmostEqual(stats["notes_per_second"], 3.876, places=3)

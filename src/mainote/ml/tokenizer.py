@@ -23,12 +23,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..maidata.model import (
+    MAX_OUTER_SIMULTANEOUS,
+    OUTER_KINDS,
+    POSITIONS,
     TICKS_PER_BAR,
     TICKS_PER_BEAT,
     Chart,
     Duration,
     Event,
     SlideSegment,
+    position_distance,
 )
 from ..maidata.model import TOUCH_SENSORS
 
@@ -276,6 +280,11 @@ class ChartTokenGrammar:
         # Positions already occupied at ``tick_positions_tick``.
         self.tick_positions_tick: int | None = None
         self.tick_positions: set[str] = set()
+        # Outer-button presses already emitted at ``outer_press_tick``.  Strict
+        # decoding stops at MAX_OUTER_SIMULTANEOUS so the model cannot stack a
+        # third hand onto one tick.
+        self.outer_press_tick: int | None = None
+        self.outer_presses = 0
         # Outer position / touch sensor -> end tick of the active hold.
         self.active_holds: dict[str, int] = {}
 
@@ -320,9 +329,20 @@ class ChartTokenGrammar:
             tick = self.bar * TICKS_PER_BAR + unit * TIME_UNIT
             if tick < self.last_event_tick:
                 raise TokenizeError("time moved backwards")
-            if self.strict and tick != self.tick_positions_tick:
-                self.tick_positions.clear()
-                self.tick_positions_tick = tick
+            if self.strict:
+                if tick != self.tick_positions_tick:
+                    self.tick_positions.clear()
+                    self.tick_positions_tick = tick
+                if tick != self.outer_press_tick:
+                    self.outer_press_tick = tick
+                    self.outer_presses = 0
+                if (
+                    tick == self.last_event_tick
+                    and self.outer_presses >= MAX_OUTER_SIMULTANEOUS
+                ):
+                    raise TokenizeError(
+                        "outer-button chord limit reached at this tick"
+                    )
             self.current_tick = tick
             self.state = "type"
             return
@@ -360,9 +380,16 @@ class ChartTokenGrammar:
                     raise TokenizeError("slide end must be an outer position")
                 end = token[len("P_") :]
                 segment = self._current_segment_require()
-                if self.strict and segment.shape == "-" and end == self._segment_start():
+                start = self._segment_start()
+                if (
+                    self.strict
+                    and segment.shape == "-"
+                    and start in POSITIONS
+                    and end in POSITIONS
+                    and position_distance(start, end) < 2
+                ):
                     raise TokenizeError(
-                        "straight slide cannot end at its start position"
+                        "straight slide must span at least two positions"
                     )
                 segment.end = end
                 self.state = "slide_dur"
@@ -511,7 +538,16 @@ class ChartTokenGrammar:
                 and self.current_segment is not None
                 and self.current_segment.shape == "-"
             ):
-                allowed.discard(f"P_{self._segment_start()}")
+                # A straight slide needs at least two buttons of separation;
+                # adjacent endpoints (and the start itself) render as a
+                # degenerate slide in simai.
+                start = self._segment_start()
+                if start in POSITIONS:
+                    allowed = {
+                        token
+                        for token in allowed
+                        if position_distance(start, token.split("_", 1)[1]) >= 2
+                    }
             return allowed
         if state == "slide_dur":
             return {"DUR_NONE", "DUR_0"} | {f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)}
@@ -538,8 +574,15 @@ class ChartTokenGrammar:
         allowed = set()
         for unit in range(UNITS_PER_BAR):
             tick = self.bar * TICKS_PER_BAR + unit * TIME_UNIT
-            if tick >= self.last_event_tick:
-                allowed.add(f"T_{unit}")
+            if tick < self.last_event_tick:
+                continue
+            if (
+                self.strict
+                and tick == self.last_event_tick
+                and self.outer_presses >= MAX_OUTER_SIMULTANEOUS
+            ):
+                continue
+            allowed.add(f"T_{unit}")
         return allowed
 
     def _allowed_event_flags(self) -> set[str]:
@@ -664,6 +707,11 @@ class ChartTokenGrammar:
                 raw="",
             )
         self.parsed.events.append(event)
+        if self.strict and self.current_type in OUTER_KINDS:
+            if self.outer_press_tick != self.current_tick:
+                self.outer_press_tick = self.current_tick
+                self.outer_presses = 0
+            self.outer_presses += 1
         if (
             self.strict
             and self.current_type in ("hold", "touch_hold")

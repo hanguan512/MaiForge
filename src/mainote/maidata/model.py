@@ -38,6 +38,12 @@ TOUCH_SENSORS = tuple(
 )
 
 EVENT_KINDS = ("tap", "hold", "slide", "touch", "touch_hold")
+# Outer-button notes occupy a hand.  Touch sensors do not: a swipe can cross
+# many sensors at one tick, so they are excluded from chord-size limits.
+OUTER_KINDS = ("tap", "hold", "slide")
+# A chart is played with two hands.  The dataset's outer-button chords are at
+# most 2 notes per tick; stricter decoders and repair passes enforce this.
+MAX_OUTER_SIMULTANEOUS = 2
 FLAG_NAMES = (
     "break",
     "ex",

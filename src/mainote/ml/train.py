@@ -925,6 +925,10 @@ def _aggregate_note_results(
     if slide_endpoint is not None:
         components.append(slide_endpoint)
     note_score = sum(components) / len(components)
+    chord_excess_ticks = sum(
+        r["chord"]["predicted_excess_ticks"] for r in results
+    )
+    chord_outer_ticks = sum(r["chord"]["predicted_outer_ticks"] for r in results)
     return {
         "windows": len(results),
         "decode_errors": decode_errors,
@@ -943,6 +947,17 @@ def _aggregate_note_results(
         "slide_endpoint_accuracy": round(slide_endpoint, 4)
         if slide_endpoint is not None
         else None,
+        # The strict decoder caps outer-button chords, so this should be zero;
+        # a non-zero value means a decode/repair regression slipped through.
+        "max_outer_simultaneous": max(
+            (r["chord"]["predicted_max_outer"] for r in results), default=0
+        ),
+        "chord_excess_ticks": chord_excess_ticks,
+        "chord_excess_rate": round(
+            chord_excess_ticks / chord_outer_ticks, 4
+        )
+        if chord_outer_ticks
+        else 0.0,
         "note_score": round(note_score, 4),
     }
 

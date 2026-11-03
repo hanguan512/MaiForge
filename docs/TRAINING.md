@@ -212,6 +212,9 @@ python -m mainote ml infer \
   JSON 可额外包含 `"bpm_changes": [{"tick": 3840, "bpm": 180}, ...]`
 - `--bpm 180 --first 0.32` — 直接覆盖 BPM / 起始时间（会清空 timing 里的
   tempo map）
+- 不传 `--bpm` 时自动估计 BPM（165 BPM 谱面先验 + 节拍倍频候选）。`bpm_confidence`
+  低于 0.2 时推理 summary 会给出 warning 和 `bpm_candidates` 前三名；节拍倍频
+  歧义无法只靠音频完全消除，听感或窗口对不齐时仍应显式 `--bpm`。
 - `--features data/features/<song_id>.npz` — 复用预计算特征
 - `--temperature 0` — 贪婪解码；默认是采样解码（`temperature 0.8`、`top-k 20`）
 - `--window-bars 16 --stride-bars 8 --context-bars 2`

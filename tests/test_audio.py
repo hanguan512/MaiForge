@@ -43,6 +43,20 @@ class TestAudioPipeline(unittest.TestCase):
         self.assertGreater(len(timing.onset_times), 50)
         self.assertGreater(timing.duration, 25.0)
 
+    def test_high_tempo_is_not_folded_to_subharmonic(self):
+        # A 190 BPM click track used to be estimated as ~126 BPM (a 3/2
+        # subharmonic) because the old prior was centred on 130 BPM.
+        from mainote.audio.features import analyze_audio
+        from mainote.demo import make_click_track
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "click.wav"
+            make_click_track(path, bpm=190.0, bars=16)
+            timing = analyze_audio(str(path))
+        self.assertLess(abs(timing.bpm - 190.0), 3.0)
+        self.assertTrue(timing.bpm_candidates)
+        self.assertLess(abs(timing.bpm_candidates[0]["bpm"] - 190.0), 3.0)
+
     def test_bpm_override(self):
         from mainote.audio.features import analyze_audio
         from mainote.demo import make_click_track
@@ -54,6 +68,15 @@ class TestAudioPipeline(unittest.TestCase):
         self.assertAlmostEqual(timing.bpm, 120.0)
         self.assertAlmostEqual(timing.first, 0.5)
         self.assertGreater(len(timing.beat_times), 10)
+
+    def test_timing_candidates_roundtrip(self):
+        timing = _synthetic_timing()
+        timing.bpm_candidates = [
+            {"bpm": 190.0, "score": 0.5, "correlation": 0.6},
+            {"bpm": 126.0, "score": 0.4, "correlation": 0.5},
+        ]
+        loaded = TimingInfo.from_dict(timing.to_dict())
+        self.assertEqual(loaded.bpm_candidates, timing.bpm_candidates)
 
     def test_retime(self):
         timing = _synthetic_timing()

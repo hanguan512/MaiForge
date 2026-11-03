@@ -6,7 +6,15 @@ import math
 from collections import Counter, defaultdict
 from typing import Any
 
-from .model import EVENT_KINDS, Chart, Event, Maidata, TICKS_PER_BAR
+from .model import (
+    EVENT_KINDS,
+    MAX_OUTER_SIMULTANEOUS,
+    OUTER_KINDS,
+    Chart,
+    Event,
+    Maidata,
+    TICKS_PER_BAR,
+)
 
 # Rough target ranges (notes per second of chart time).  These are deliberately
 # broad; the dataset report should replace them with empirical quantiles.
@@ -64,10 +72,18 @@ def chart_stats(chart: Chart) -> dict[str, Any]:
     )
     simultaneous = Counter()
     by_tick: dict[int, int] = defaultdict(int)
+    outer_by_tick: dict[int, int] = defaultdict(int)
     for event in chart.events:
         by_tick[event.tick] += 1
+        if event.kind in OUTER_KINDS:
+            outer_by_tick[event.tick] += 1
     for count in by_tick.values():
         simultaneous[count] += 1
+    outer_simultaneous = Counter(outer_by_tick.values())
+    outer_ticks = len(outer_by_tick)
+    outer_excess_ticks = sum(
+        1 for count in outer_by_tick.values() if count > MAX_OUTER_SIMULTANEOUS
+    )
 
     duration = max(chart.duration_seconds, 1e-9)
     total = len(chart.events)
@@ -125,6 +141,19 @@ def chart_stats(chart: Chart) -> dict[str, Any]:
         "max_simultaneous": max(by_tick.values(), default=0),
         "simultaneous_histogram": {
             str(k): v for k, v in sorted(simultaneous.items())
+        },
+        # Outer-button chords only.  Touch swipes are one gesture and can span
+        # many sensors, so they must not be mixed into the two-hand check.
+        "max_outer_simultaneous": max(outer_by_tick.values(), default=0),
+        "outer_ticks": outer_ticks,
+        "outer_chord_excess_ticks": outer_excess_ticks,
+        "outer_chord_excess_rate": round(
+            outer_excess_ticks / outer_ticks, 4
+        )
+        if outer_ticks
+        else 0.0,
+        "outer_simultaneous_histogram": {
+            str(k): v for k, v in sorted(outer_simultaneous.items())
         },
         "divisions": divisions,
         "finest_division": max(divisions, default=4),

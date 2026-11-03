@@ -145,6 +145,12 @@ def evaluate_chart(
                 "delta": pred_stats["max_simultaneous"]
                 - ref_stats["max_simultaneous"],
             },
+            "max_outer_simultaneous": {
+                "reference": ref_stats["max_outer_simultaneous"],
+                "predicted": pred_stats["max_outer_simultaneous"],
+                "delta": pred_stats["max_outer_simultaneous"]
+                - ref_stats["max_outer_simultaneous"],
+            },
             "type_ratios": {
                 kind: {
                     "reference": ref_stats["ratios"].get(kind, 0.0),
@@ -154,6 +160,17 @@ def evaluate_chart(
                     set(ref_stats["ratios"]) | set(pred_stats["ratios"])
                 )
             },
+        },
+        # A separate chord block so callers can select checkpoints on a
+        # two-hand constraint without parsing the generic simultaneous stats.
+        "chord": {
+            "reference_max_outer": ref_stats["max_outer_simultaneous"],
+            "predicted_max_outer": pred_stats["max_outer_simultaneous"],
+            "reference_excess_ticks": ref_stats["outer_chord_excess_ticks"],
+            "predicted_excess_ticks": pred_stats["outer_chord_excess_ticks"],
+            "reference_outer_ticks": ref_stats["outer_ticks"],
+            "predicted_outer_ticks": pred_stats["outer_ticks"],
+            "predicted_excess_rate": pred_stats["outer_chord_excess_rate"],
         },
     }
 

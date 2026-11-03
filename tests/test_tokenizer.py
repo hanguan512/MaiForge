@@ -185,6 +185,64 @@ class TestStrictGrammar(unittest.TestCase):
         grammar.feed("END_EVENT")
         self.assertEqual(len(grammar.finish().events), 2)
 
+    def test_blocks_third_outer_note_at_same_tick(self):
+        grammar = self._grammar()
+        for token in (
+            "BOS",
+            "T_0",
+            "TAP",
+            "P_1",
+            "END_EVENT",
+            "T_0",
+            "TAP",
+            "P_2",
+            "END_EVENT",
+        ):
+            grammar.feed(token)
+        allowed = grammar.allowed_tokens()
+        self.assertNotIn("T_0", allowed)
+        self.assertIn("T_1", allowed)
+        self.assertIn("BAR", allowed)
+        with self.assertRaises(TokenizeError):
+            grammar.feed("T_0")
+
+    def test_third_outer_note_is_allowed_at_a_later_tick(self):
+        grammar = self._grammar()
+        for token in (
+            "BOS",
+            "T_0",
+            "TAP",
+            "P_1",
+            "END_EVENT",
+            "T_0",
+            "TAP",
+            "P_2",
+            "END_EVENT",
+            "T_1",
+            "TAP",
+            "P_3",
+            "END_EVENT",
+        ):
+            grammar.feed(token)
+        self.assertEqual(len(grammar.finish().events), 3)
+
+    def test_touch_after_one_outer_note_stays_allowed(self):
+        grammar = self._grammar()
+        for token in (
+            "BOS",
+            "T_0",
+            "TAP",
+            "P_1",
+            "END_EVENT",
+            "T_0",
+            "TOUCH",
+            "S_A1",
+            "END_EVENT",
+        ):
+            grammar.feed(token)
+        self.assertIn("T_0", grammar.allowed_tokens())
+        self.assertEqual(len(grammar.finish().events), 2)
+
     def test_rejects_degenerate_straight_slide(self):
         grammar = self._grammar()
         for token in ("BOS", "T_0", "SLIDE", "P_1", "CHAIN_SINGLE", "SHAPE_MINUS"):
@@ -192,6 +250,20 @@ class TestStrictGrammar(unittest.TestCase):
         self.assertNotIn("P_1", grammar.allowed_tokens())
         with self.assertRaises(TokenizeError):
             grammar.feed("P_1")
+
+    def test_rejects_adjacent_straight_slide_endpoint(self):
+        grammar = self._grammar()
+        for token in ("BOS", "T_0", "SLIDE", "P_1", "CHAIN_SINGLE", "SHAPE_MINUS"):
+            grammar.feed(token)
+        allowed = grammar.allowed_tokens()
+        # P_8/P_2 are adjacent to P_1 on the ring; simai needs >= 2 apart.
+        self.assertNotIn("P_1", allowed)
+        self.assertNotIn("P_2", allowed)
+        self.assertNotIn("P_8", allowed)
+        self.assertIn("P_3", allowed)
+        self.assertIn("P_5", allowed)
+        with self.assertRaises(TokenizeError):
+            grammar.feed("P_2")
 
     def test_blocks_position_inside_active_hold(self):
         grammar = self._grammar()

@@ -438,7 +438,7 @@ def _cmd_eval(args) -> int:
 
 
 def _cmd_analyze(args) -> int:
-    from .audio.features import analyze_audio
+    from .audio.features import BPM_LOW_CONFIDENCE, analyze_audio
 
     timing = analyze_audio(
         args.audio,
@@ -452,6 +452,16 @@ def _cmd_analyze(args) -> int:
         f"duration={timing.duration:.2f}s beats={len(timing.beat_times)} "
         f"downbeats={len(timing.downbeat_times)} onsets={len(timing.onset_times)}"
     )
+    if timing.bpm_candidates:
+        preview = " ".join(
+            f"{item['bpm']:.1f}" for item in timing.bpm_candidates[:3]
+        )
+        print(f"tempo candidates: {preview}")
+    if args.bpm is None and timing.bpm_confidence < BPM_LOW_CONFIDENCE:
+        print(
+            "warning: low BPM confidence; pass --bpm <value> if the beat grid "
+            "is wrong"
+        )
     print(f"wrote timing: {args.out}")
     return 0
 

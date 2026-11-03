@@ -11,10 +11,13 @@ from typing import Any
 import numpy as np
 import torch
 
+from ..audio.features import BPM_LOW_CONFIDENCE
 from ..audio.timing import TimingInfo
 from ..generate.rule import DEFAULT_LEVELS
 from ..maidata.compiler import compile_maidata
 from ..maidata.model import (
+    MAX_OUTER_SIMULTANEOUS,
+    OUTER_KINDS,
     TICKS_PER_BAR,
     BpmChange,
     Chart,
@@ -140,6 +143,19 @@ def infer(
 
     events: list[Event] = []
     warnings: list[str] = []
+    if (
+        bpm is None
+        and timing.bpm_candidates
+        and timing.bpm_confidence < BPM_LOW_CONFIDENCE
+    ):
+        preview = ", ".join(
+            f"{candidate['bpm']:.1f}"
+            for candidate in timing.bpm_candidates[:3]
+        )
+        warnings.append(
+            f"low BPM confidence {timing.bpm_confidence:.2f} "
+            f"(candidates: {preview}); pass --bpm if the beat grid is wrong"
+        )
     covered_until_tick = 0
     for start in range(start_bar, end_bar, stride_bars):
         if start >= max_bar:
@@ -296,6 +312,8 @@ def infer(
         "difficulty": _normalize_difficulty(difficulty),
         "level": _fmt_level(level_value),
         "bpm": initial_bpm,
+        "bpm_confidence": timing.bpm_confidence,
+        "bpm_candidates": timing.bpm_candidates,
         "bpm_changes": timing.bpm_changes,
         "temperature": temperature,
         "top_k": top_k,
@@ -361,11 +379,12 @@ def _round_up_bar(tick: int) -> int:
 
 
 def _repair_events(events: list[Event]) -> tuple[list[Event], list[str]]:
-    """Drop duplicate/overlapping events produced by an imperfect model."""
+    """Drop duplicate/overlapping/impossible events from an imperfect model."""
     out: list[Event] = []
     warnings: list[str] = []
     seen: set[tuple[int, str]] = set()
     active: dict[str, int] = {}
+    outer_by_tick: dict[int, int] = {}
     for event in sorted(events, key=lambda e: e.sort_key()):
         for pos in list(active):
             if active[pos] <= event.tick:
@@ -381,6 +400,18 @@ def _repair_events(events: list[Event]) -> tuple[list[Event], list[str]]:
                 f"dropped {event.kind} {event.position} at tick {event.tick} inside active hold"
             )
             continue
+        # Safety net for checkpoints/decoders that do not enforce the
+        # grammar's outer-button chord cap.  Touch sensors are excluded: one
+        # swipe can legitimately cover many sensors at the same tick.
+        if event.kind in OUTER_KINDS:
+            count = outer_by_tick.get(event.tick, 0)
+            if count >= MAX_OUTER_SIMULTANEOUS:
+                warnings.append(
+                    f"dropped {event.kind} {event.position} at tick {event.tick}: "
+                    f"more than {MAX_OUTER_SIMULTANEOUS} outer notes at one tick"
+                )
+                continue
+            outer_by_tick[event.tick] = count + 1
         if event.kind in ("hold", "touch_hold"):
             if event.duration is None:
                 warnings.append(

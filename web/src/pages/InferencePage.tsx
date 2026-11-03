@@ -293,7 +293,7 @@ export default function InferencePage() {
 
         <Track
           label="谱面"
-          hint="难度、等级与运行位置"
+          hint="难度、等级、BPM 与运行位置"
           accent={PALETTE.gold}
           action={
             <Typography variant="caption" color="text.secondary">
@@ -328,6 +328,31 @@ export default function InferencePage() {
                   );
                 })}
               </Stack>
+            </Box>
+
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                gap: 1.5,
+              }}
+            >
+              <TextField
+                fullWidth
+                label="BPM 覆盖"
+                placeholder="留空自动估计"
+                helperText="填谱面 BPM；自动估计出现倍频错误时手动指定"
+                value={form.bpm}
+                onChange={(event) => update("bpm", event.target.value)}
+              />
+              <TextField
+                fullWidth
+                label="first / 起始秒"
+                placeholder="留空默认为 0"
+                helperText="音乐第一拍相对音频开头的秒数"
+                value={form.first}
+                onChange={(event) => update("first", event.target.value)}
+              />
             </Box>
 
             <Box
@@ -369,7 +394,7 @@ export default function InferencePage() {
                 sx={{ borderTop: 1, borderColor: "divider" }}
               >
                 <Typography variant="caption" color="text.secondary">
-                  采样与时间轴参数
+                  采样、timing 与 features
                 </Typography>
               </AccordionSummary>
               <AccordionDetails>
@@ -385,8 +410,6 @@ export default function InferencePage() {
                     ["topK", "top-k"],
                     ["seed", "seed"],
                     ["maxNewTokens", "max_new_tokens"],
-                    ["bpm", "BPM 覆盖"],
-                    ["first", "first (秒)"],
                   ].map(([key, label]) => (
                     <TextField
                       key={key}

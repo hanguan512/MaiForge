@@ -7,6 +7,19 @@ from typing import Any
 import math
 
 
+# Audio autocorrelation cannot distinguish a tempo from its metrical relatives
+# (95/190, 126.33/190, ...).  Maimai's notated ``&wholebpm`` clusters around
+# 165 BPM (median of the local chart corpus), so a log-normal prior over the
+# candidate tempo resolves the octave while still letting 60 BPM and 250+ BPM
+# outliers win when their autocorrelation peak is strong enough.
+BPM_PRIOR_CENTER = 165.0
+BPM_PRIOR_SIGMA = 0.6
+# Below this margin the estimate is ambiguous enough that callers should
+# surface the candidates and suggest a manual ``--bpm`` override.
+BPM_LOW_CONFIDENCE = 0.2
+_TEMPO_MULTIPLIERS = (1.0, 2.0, 0.5, 1.5, 2.0 / 3.0, 4.0 / 3.0, 3.0 / 4.0)
+
+
 def _numpy():
     try:
         import numpy as np
@@ -108,68 +121,181 @@ def interpolate_strength(times, strength, query_times):
     )
 
 
-def estimate_bpm(
-    times,
-    strength,
-    *,
-    min_bpm: float = 60.0,
-    max_bpm: float = 200.0,
-):
-    """Autocorrelation tempo estimate with a broad 130-BPM prior."""
+def _autocorrelation(times, strength, min_bpm: float, max_bpm: float):
     np = _numpy()
     times = np.asarray(times, dtype=np.float64)
     strength = np.asarray(strength, dtype=np.float64)
     if times.size < 4 or strength.size < 4:
-        return 120.0, 0.0
+        return {}, 0.0
 
     dt = float(np.median(np.diff(times)))
     if dt <= 0:
-        return 120.0, 0.0
+        return {}, 0.0
     x = np.maximum(strength - float(strength.mean()), 0.0)
     if float(x.sum()) <= 0:
-        return 120.0, 0.0
+        return {}, 0.0
 
     min_lag = max(1, int(round(60.0 / max_bpm / dt)))
     max_lag = min(int(round(60.0 / min_bpm / dt)), x.size - 2)
     if max_lag <= min_lag:
-        return 120.0, 0.0
+        return {}, dt
 
-    best_lag = min_lag
-    best_score = -1.0
     scores: dict[int, float] = {}
     for lag in range(min_lag, max_lag + 1):
         a = x[:-lag]
         b = x[lag:]
         denom = float(np.sqrt(np.dot(a, a) * np.dot(b, b))) + 1e-12
-        corr = float(np.dot(a, b) / denom)
-        bpm = 60.0 / (lag * dt)
-        prior = math.exp(-0.5 * (math.log2(max(bpm, 1e-6) / 130.0) / 0.7) ** 2)
-        score = corr * prior
-        scores[lag] = corr
-        if score > best_score:
-            best_score = score
-            best_lag = lag
+        scores[lag] = float(np.dot(a, b) / denom)
+    return scores, dt
 
-    # Parabolic refinement around the best integer lag.
-    if best_lag - 1 in scores and best_lag + 1 in scores:
-        left = scores[best_lag - 1]
-        center = scores[best_lag]
-        right = scores[best_lag + 1]
-        denom = left - 2.0 * center + right
-        if abs(denom) > 1e-9:
-            offset = 0.5 * (left - right) / denom
-            offset = max(-0.5, min(0.5, offset))
-            best_lag_float = best_lag + offset
-        else:
-            best_lag_float = float(best_lag)
+
+def _correlation_at(scores: dict[int, float], lag: float) -> float:
+    """Linearly interpolate the autocorrelation at a fractional lag."""
+    first = min(scores)
+    last = max(scores)
+    lag = max(float(first), min(float(last), lag))
+    lo = int(math.floor(lag))
+    hi = min(lo + 1, last)
+    if lo == hi:
+        return scores[lo]
+    frac = lag - lo
+    return scores[lo] * (1.0 - frac) + scores[hi] * frac
+
+
+def _tempo_peaks(scores: dict[int, float]) -> list[tuple[float, int]]:
+    lags = sorted(scores)
+    peaks: list[tuple[float, int]] = []
+    for index in range(1, len(lags) - 1):
+        lag = lags[index]
+        if (
+            scores[lag] >= scores[lags[index - 1]]
+            and scores[lag] >= scores[lags[index + 1]]
+        ):
+            peaks.append((scores[lag], lag))
+    if not peaks:
+        peaks = [(scores[lag], lag) for lag in lags]
+    peaks.sort(reverse=True)
+    return peaks
+
+
+def _refine_bpm(scores: dict[int, float], dt: float, bpm: float) -> float:
+    """Parabolic interpolation around the nearest autocorrelation lag."""
+    center = int(round(60.0 / (bpm * dt)))
+    if center - 1 not in scores or center + 1 not in scores:
+        return bpm
+    left = scores[center - 1]
+    middle = scores[center]
+    right = scores[center + 1]
+    denom = left - 2.0 * middle + right
+    if abs(denom) <= 1e-9:
+        return bpm
+    offset = max(-0.5, min(0.5, 0.5 * (left - right) / denom))
+    refined = 60.0 / ((center + offset) * dt)
+    # A candidate produced by a metrical multiplier may not sit on a peak;
+    # only accept the refinement when it stays near the original tempo.
+    if abs(refined / bpm - 1.0) > 0.03:
+        return bpm
+    return refined
+
+
+def estimate_tempo(
+    times,
+    strength,
+    *,
+    min_bpm: float = 60.0,
+    max_bpm: float = 260.0,
+    candidate_limit: int = 5,
+) -> tuple[float, float, list[dict[str, float]]]:
+    """Estimate BPM, confidence, and ranked metrical candidates.
+
+    Autocorrelation finds the periodicities, but the notated tempo is
+    ambiguous between metrical relatives (e.g. 126.33 and 190 BPM describe the
+    same onsets).  Each autocorrelation peak is therefore expanded by common
+    tempo ratios and scored against the autocorrelation curve plus a
+    chart-tempo prior.  Confidence is the relative score margin to the next
+    tempo that is at least 8% away; low values mean the caller should ask for
+    ``--bpm``.
+    """
+    scores, dt = _autocorrelation(times, strength, min_bpm, max_bpm)
+    if not scores:
+        return 120.0, 0.0, []
+
+    expanded: list[tuple[float, float, float]] = []
+    for peak_corr, lag in _tempo_peaks(scores)[:12]:
+        peak_bpm = 60.0 / (lag * dt)
+        for multiplier in _TEMPO_MULTIPLIERS:
+            bpm = peak_bpm * multiplier
+            if bpm < min_bpm or bpm > max_bpm:
+                continue
+            lag_f = 60.0 / (bpm * dt)
+            if lag_f < min(scores) or lag_f > max(scores):
+                continue
+            corr = _correlation_at(scores, lag_f)
+            prior = math.exp(
+                -0.5
+                * (
+                    math.log2(max(bpm, 1e-6) / BPM_PRIOR_CENTER)
+                    / BPM_PRIOR_SIGMA
+                )
+                ** 2
+            )
+            expanded.append((corr * prior, corr, bpm))
+
+    # Keep one candidate per tempo cluster; adjacent lags and multiplier
+    # aliases otherwise produce misleadingly tiny confidence margins.
+    expanded.sort(reverse=True)
+    candidates: list[tuple[float, float, float]] = []
+    for score, corr, bpm in expanded:
+        if all(abs(bpm / existing[2] - 1.0) > 0.06 for existing in candidates):
+            candidates.append((score, corr, bpm))
+    if not candidates:
+        return 120.0, 0.0, []
+
+    best_score, best_corr, best_bpm = candidates[0]
+    best_bpm = _refine_bpm(scores, dt, best_bpm)
+
+    second = next(
+        (
+            candidate
+            for candidate in candidates[1:]
+            if abs(candidate[2] / best_bpm - 1.0) > 0.08
+        ),
+        None,
+    )
+    if best_corr < 0.05:
+        confidence = 0.0
+    elif second is None or best_score <= 0:
+        confidence = 1.0
     else:
-        best_lag_float = float(best_lag)
+        confidence = (best_score - second[0]) / best_score
+    confidence = min(confidence, best_corr / 0.15)
+    confidence = max(0.0, min(1.0, confidence))
 
-    bpm = 60.0 / (best_lag_float * dt)
-    corr_values = list(scores.values())
-    mean_corr = float(np.mean(corr_values)) if corr_values else 0.0
-    confidence = max(0.0, min(1.0, (scores[best_lag] - mean_corr) / 0.5))
-    return float(bpm), confidence
+    reported = [
+        {
+            "bpm": round(float(bpm), 3),
+            "score": round(float(score), 4),
+            "correlation": round(float(corr), 4),
+        }
+        for score, corr, bpm in candidates[: max(1, candidate_limit)]
+    ]
+    if reported:
+        reported[0]["bpm"] = round(float(best_bpm), 3)
+    return float(best_bpm), float(confidence), reported
+
+
+def estimate_bpm(
+    times,
+    strength,
+    *,
+    min_bpm: float = 60.0,
+    max_bpm: float = 260.0,
+):
+    """Return ``(bpm, confidence)``; see :func:`estimate_tempo`."""
+    bpm, confidence, _ = estimate_tempo(
+        times, strength, min_bpm=min_bpm, max_bpm=max_bpm
+    )
+    return bpm, confidence
 
 
 def track_beats(
@@ -242,7 +368,7 @@ def analyze_audio(
 
     audio = load_audio(path, sr=sr)
     times, strength = onset_envelope(audio.samples, audio.sr)
-    estimated_bpm, bpm_conf = estimate_bpm(times, strength)
+    estimated_bpm, bpm_conf, bpm_candidates = estimate_tempo(times, strength)
     if bpm is not None:
         if bpm <= 0:
             raise ValueError("bpm override must be positive")
@@ -259,6 +385,7 @@ def analyze_audio(
         duration=audio.duration,
         bpm=used_bpm,
         bpm_confidence=bpm_conf,
+        bpm_candidates=bpm_candidates,
         beat_times=beats,
         downbeat_times=downbeats,
         onset_times=[float(x) for x in onset_times],

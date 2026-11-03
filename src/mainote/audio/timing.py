@@ -25,6 +25,9 @@ class TimingInfo:
     beat_phase: float = 0.0
     downbeat_phase: int = 0
     tags: dict[str, str] = field(default_factory=dict)
+    # Ranked tempo alternatives from the estimator.  Present so callers can
+    # show why a low-confidence BPM may need a manual ``--bpm`` override.
+    bpm_candidates: list[dict[str, float]] = field(default_factory=list)
     # Optional manual tempo map: [{"tick": 0, "bpm": 180}, ...].  Empty means
     # constant ``bpm``.  Unlike beat_times this maps chart ticks directly.
     bpm_changes: list[dict[str, float]] = field(default_factory=list)
@@ -96,6 +99,14 @@ class TimingInfo:
             "duration": round(float(self.duration), 6),
             "bpm": round(float(self.bpm), 6),
             "bpm_confidence": round(float(self.bpm_confidence), 4),
+            "bpm_candidates": [
+                {
+                    "bpm": round(float(item.get("bpm", 0.0)), 3),
+                    "score": round(float(item.get("score", 0.0)), 4),
+                    "correlation": round(float(item.get("correlation", 0.0)), 4),
+                }
+                for item in self.bpm_candidates
+            ],
             "first": round(float(self.first), 6),
             "beat_phase": round(float(self.beat_phase), 6),
             "downbeat_phase": int(self.downbeat_phase),
@@ -118,6 +129,14 @@ class TimingInfo:
             duration=float(data.get("duration", 0.0)),
             bpm=float(data.get("bpm", 120.0)),
             bpm_confidence=float(data.get("bpm_confidence", 0.0)),
+            bpm_candidates=[
+                {
+                    "bpm": float(item.get("bpm", 0.0)),
+                    "score": float(item.get("score", 0.0)),
+                    "correlation": float(item.get("correlation", 0.0)),
+                }
+                for item in data.get("bpm_candidates", [])
+            ],
             beat_times=[float(x) for x in data.get("beat_times", [])],
             downbeat_times=[float(x) for x in data.get("downbeat_times", [])],
             onset_times=[float(x) for x in data.get("onset_times", [])],
