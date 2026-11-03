@@ -240,6 +240,7 @@ def train(args: argparse.Namespace) -> int:
         min_events=int(data_cfg.get("min_events", 1)),
         max_windows_per_chart=data_cfg.get("max_windows_per_chart"),
         max_audio_frames=data_max_frames,
+        max_tokens=model_cfg.max_tokens,
         min_alignment=float(data_cfg.get("min_alignment", 0.0)),
         augment=True,
         spec_augment=data_cfg.get("spec_augment"),
@@ -256,6 +257,7 @@ def train(args: argparse.Namespace) -> int:
         min_events=int(data_cfg.get("min_events", 1)),
         max_windows_per_chart=data_cfg.get("max_windows_per_chart"),
         max_audio_frames=data_max_frames,
+        max_tokens=model_cfg.max_tokens,
         min_alignment=float(data_cfg.get("min_alignment", 0.0)),
         augment=False,
         **cache_kwargs,
@@ -264,6 +266,22 @@ def train(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "training dataset is empty. Check manifest split/valid/audio/features."
         )
+    for split_name, split_dataset in (
+        ("train", train_dataset),
+        ("val", val_dataset),
+    ):
+        if split_dataset.skipped_windows:
+            print(
+                json.dumps(
+                    {
+                        "dataset": split_name,
+                        "windows": len(split_dataset),
+                        "skipped_windows": split_dataset.skipped_windows,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
 
     batch_size = int(train_cfg.get("batch_size", 8))
     num_workers = int(args.num_workers if args.num_workers is not None else train_cfg.get("num_workers", 4))
@@ -796,8 +814,25 @@ def evaluate_note_level(
 
     results: list[dict[str, Any]] = []
     decode_errors = 0
-    for index in chosen:
+    print(
+        json.dumps(
+            {
+                "note_eval": "start",
+                "windows": len(chosen),
+                "songs": len(groups),
+                "max_new_tokens": max_new_tokens,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+    for position, index in enumerate(chosen, start=1):
+        window_started = time.time()
         item = dataset[index]
+        spec = dataset.windows[index]
+        song_id = str(item.get("song_id", ""))
+        start_bar = int(item.get("start_bar", spec.start_bar))
+        end_bar = int(item.get("end_bar", spec.end_bar))
         token_strings = vocab.decode(item["tokens"])
         difficulty_index = 5
         level: float | None = None
@@ -815,32 +850,64 @@ def evaluate_note_level(
         mel_mask = torch.zeros(
             (1, mel.size(1)), dtype=torch.bool, device=device
         )
+        template = dataset.chart_for(index)
+        start_tick, end_tick = dataset.window_bounds(index)
+        reference = tokenizer.decode_ids(item["tokens"])
+        reference_events = []
+        for event in reference.events:
+            absolute_tick = event.tick + start_tick
+            if start_tick <= absolute_tick < end_tick:
+                event.tick = absolute_tick
+                reference_events.append(event)
+        # Reference length bounds the useful output.  The decoder has no KV
+        # cache, so an over-generating window that runs to max_new_tokens is
+        # disproportionately expensive; 2x the reference plus slack is ample
+        # for a different but valid tokenization.
+        token_budget = _decode_budget(len(item["tokens"]), max_new_tokens)
         try:
-            _, parsed = constrained_decode(
+            ids, parsed = constrained_decode(
                 model,
                 mel,
                 mel_mask,
                 tokenizer=tokenizer,
                 difficulty_index=difficulty_index,
                 level=level,
-                max_new_tokens=max_new_tokens,
+                max_new_tokens=token_budget,
                 temperature=temperature,
                 top_k=top_k,
                 seed=seed,
                 allow_incomplete=True,
             )
-        except Exception:  # noqa: BLE001 - keep evaluation running
+        except Exception as exc:  # noqa: BLE001 - keep evaluation running
             decode_errors += 1
+            print(
+                json.dumps(
+                    {
+                        "note_eval_window": position,
+                        "windows": len(chosen),
+                        "song_id": song_id,
+                        "window": [start_bar, end_bar],
+                        "error": str(exc),
+                        "seconds": round(time.time() - window_started, 2),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
             continue
-        reference = tokenizer.decode_ids(item["tokens"])
-        template = dataset.chart_for(index)
-        start_tick = dataset.window_bounds(index)[0]
-        for event in reference.events:
-            event.tick += start_tick
-        for event in parsed.events:
-            event.tick += start_tick
-        ref_chart = _window_chart(template, reference.events)
-        pred_chart = _window_chart(template, parsed.events)
+        predicted_events, generated_bars = _trim_generated_events(
+            ids,
+            parsed.events,
+            vocab,
+            start_tick=start_tick,
+            end_tick=end_tick,
+        )
+        ref_chart = _window_chart(
+            template, reference_events, end_tick=end_tick
+        )
+        pred_chart = _window_chart(
+            template, predicted_events, end_tick=end_tick
+        )
         results.append(
             evaluate_chart(
                 pred_chart,
@@ -848,10 +915,69 @@ def evaluate_note_level(
                 tolerance_seconds=tolerance_seconds,
             )
         )
+        print(
+            json.dumps(
+                {
+                    "note_eval_window": position,
+                    "windows": len(chosen),
+                    "song_id": song_id,
+                    "window": [start_bar, end_bar],
+                    "reference": len(reference_events),
+                    "predicted": len(predicted_events),
+                    "generated_bars": generated_bars,
+                    "generated_tokens": len(ids),
+                    "token_budget": token_budget,
+                    "complete": parsed.done,
+                    "seconds": round(time.time() - window_started, 2),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
     return _aggregate_note_results(results, decode_errors)
 
 
-def _window_chart(template: Chart, events: list[Any]) -> Chart:
+def _decode_budget(reference_tokens: int, configured: int) -> int:
+    """Cap note-eval decoding relative to the reference token count."""
+    configured = int(configured)
+    if configured <= 0:
+        return configured
+    return min(configured, max(64, int(reference_tokens) * 2 + 32))
+
+
+def _trim_generated_events(
+    ids: list[int],
+    events: list[Any],
+    vocab: ChartVocabulary,
+    *,
+    start_tick: int,
+    end_tick: int,
+) -> tuple[list[Any], int]:
+    """Keep only events the decoder actually covered, like ``ml infer``.
+
+    A ``BAR`` token means the model advanced one bar.  Without trimming,
+    events emitted past the window are counted as false positives and
+    ``note_score`` selects the wrong checkpoint.
+    """
+    bar_count = sum(
+        1 for token_id in ids if vocab.id_to_token[token_id] == "BAR"
+    )
+    generated_bars = bar_count + 1 if (bar_count or events) else 0
+    max_bars = max(0, (end_tick - start_tick) // TICKS_PER_BAR)
+    generated_bars = max(0, min(max_bars, generated_bars))
+    generated_end_tick = start_tick + generated_bars * TICKS_PER_BAR
+    kept: list[Any] = []
+    for event in events:
+        absolute_tick = event.tick + start_tick
+        if start_tick <= absolute_tick < generated_end_tick:
+            event.tick = absolute_tick
+            kept.append(event)
+    return kept, generated_bars
+
+
+def _window_chart(
+    template: Chart, events: list[Any], *, end_tick: int | None = None
+) -> Chart:
     return Chart(
         index=template.index,
         level=template.level,
@@ -861,7 +987,7 @@ def _window_chart(template: Chart, events: list[Any]) -> Chart:
         events=events,
         bpm_changes=list(template.bpm_changes),
         division_changes=list(template.division_changes),
-        end_tick=template.end_tick,
+        end_tick=end_tick if end_tick is not None else template.end_tick,
     )
 
 

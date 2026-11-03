@@ -62,14 +62,13 @@ train:
   checkpoint_metric: note_score
   note_eval:
     enabled: true
-    # 8 songs x up to 16 windows is ~16x the old 2 x 4 coverage; note_score is
-    # used for best.pt, and 8 windows was too noisy to select a checkpoint.
-    # Every 2 epochs keeps best.pt within 2 epochs of the latest weights.
-    # This adds several minutes per evaluation; raise every_n_epochs or lower
-    # max_songs/max_windows if iteration speed matters more than stability.
-    every_n_epochs: 2
-    max_songs: 8
-    max_windows: 16
+    # 4 songs x up to 8 windows = 32 windows.  The previous 8 x 16 coverage
+    # made an epoch-0 evaluation dominate wall-clock (the decoder has no KV
+    # cache); 32 is enough to select best.pt, and the final epoch always runs.
+    # Decoding is also capped at ~2x the reference token count per window.
+    every_n_epochs: 5
+    max_songs: 4
+    max_windows: 8
     max_new_tokens: 2048
     temperature: 0.0
     tolerance_seconds: 0.06

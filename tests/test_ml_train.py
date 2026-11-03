@@ -8,11 +8,14 @@ try:
 except ImportError:
     HAS_TORCH = False
 
+from mainote.maidata.model import TICKS_PER_BAR, Event
 from mainote.ml.tokenizer import ChartVocabulary
 
 if HAS_TORCH:
     from mainote.ml.train import (
         ClassAccuracy,
+        _decode_budget,
+        _trim_generated_events,
         build_token_weights,
         sequence_cross_entropy,
     )
@@ -86,6 +89,51 @@ class TestTrainingLoss(unittest.TestCase):
         self.assertEqual(result["duration"]["accuracy"], 1.0)
         self.assertEqual(result["position"]["accuracy"], 0.0)
         self.assertEqual(result["special"]["total"], 0)
+
+
+@unittest.skipUnless(HAS_TORCH, "torch is required")
+class TestNoteEvalHelpers(unittest.TestCase):
+    def test_decode_budget_tracks_reference_length(self):
+        self.assertEqual(_decode_budget(4, 2048), 64)
+        self.assertEqual(_decode_budget(100, 2048), 232)
+        self.assertEqual(_decode_budget(1000, 2048), 2032)
+        self.assertEqual(_decode_budget(1000, 128), 128)
+        self.assertEqual(_decode_budget(1000, 0), 0)
+
+    def test_trim_generated_events_uses_generated_bars(self):
+        vocab = ChartVocabulary.default()
+        # One BAR after the first event means the model covered bar 0 and bar 1;
+        # an event at bar 2 is outside the generated range.
+        ids = vocab.encode(["BOS", "T_0", "TAP", "P_1", "END_EVENT", "BAR"])
+        events = [
+            Event(tick=0, kind="tap", position="1"),
+            Event(tick=2 * TICKS_PER_BAR, kind="tap", position="2"),
+        ]
+        kept, bars = _trim_generated_events(
+            ids,
+            events,
+            vocab,
+            start_tick=0,
+            end_tick=4 * TICKS_PER_BAR,
+        )
+        self.assertEqual(bars, 2)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].tick, 0)
+
+    def test_trim_generated_events_offsets_absolute_ticks(self):
+        vocab = ChartVocabulary.default()
+        ids = vocab.encode(["BOS", "T_0", "TAP", "P_1", "END_EVENT"])
+        events = [Event(tick=0, kind="tap", position="1")]
+        kept, bars = _trim_generated_events(
+            ids,
+            events,
+            vocab,
+            start_tick=2 * TICKS_PER_BAR,
+            end_tick=4 * TICKS_PER_BAR,
+        )
+        self.assertEqual(bars, 1)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].tick, 2 * TICKS_PER_BAR)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ class ChartWindowDataset(Dataset):
         min_events: int = 1,
         max_windows_per_chart: int | None = None,
         max_audio_frames: int | None = 4096,
+        max_tokens: int | None = None,
         min_alignment: float = 0.0,
         augment: bool = False,
         spec_augment: dict[str, Any] | None = None,
@@ -61,14 +62,19 @@ class ChartWindowDataset(Dataset):
         self.context_bars = context_bars
         self.min_events = min_events
         self.max_audio_frames = max_audio_frames
+        self.max_tokens = max_tokens
         self.augment = augment
         self.spec_augment = spec_augment or {}
         self.chart_cache_size = chart_cache_size
         self.feature_cache_size = feature_cache_size
         self._feature_cache: OrderedDict[str, tuple[np.ndarray, float]] = OrderedDict()
         self._chart_cache: OrderedDict[Path, Chart] = OrderedDict()
+        self._feature_meta_cache: dict[str, tuple[float, int] | None] = {}
         self._rng = random.Random(0)
         self.windows: list[WindowSpec] = []
+        # Reasons windows were dropped during construction.  Training logs this
+        # once instead of crashing a DataLoader worker mid-epoch.
+        self.skipped_windows: dict[str, int] = {}
 
         rows = self._read_rows(min_alignment=min_alignment)
         for row in rows:
@@ -98,15 +104,19 @@ class ChartWindowDataset(Dataset):
                 start_tick = start * TICKS_PER_BAR
                 end_tick = end * TICKS_PER_BAR
                 count = sum(1 for e in chart.events if start_tick <= e.tick < end_tick)
-                if count >= min_events:
-                    windows.append(
-                        WindowSpec(
-                            row=row,
-                            sample_path=sample_path,
-                            start_bar=start,
-                            end_bar=end,
-                        )
-                    )
+                if count < min_events:
+                    continue
+                spec = WindowSpec(
+                    row=row,
+                    sample_path=sample_path,
+                    start_bar=start,
+                    end_bar=end,
+                )
+                # Reject unusable windows during construction.  Doing this
+                # lazily in __getitem__ kills a worker halfway through an epoch
+                # (overlong mel, missing features, or too many tokens).
+                if self._window_is_usable(spec, chart):
+                    windows.append(spec)
             if max_windows_per_chart and len(windows) > max_windows_per_chart:
                 caps = max_windows_per_chart
                 step = max(1, len(windows) // caps)
@@ -121,35 +131,11 @@ class ChartWindowDataset(Dataset):
         spec = self.windows[index]
         chart = self.chart_for(index)
         row = spec.row
-        start_tick = spec.start_bar * TICKS_PER_BAR
-        end_tick = spec.end_bar * TICKS_PER_BAR
-        difficulty_index = int(row.get("chart_index") or chart.index)
-        level = row.get("level_num")
-        if level is None:
-            level = row.get("level")
-        token_ids = self.tokenizer.encode_chart(
-            chart,
-            start_tick=start_tick,
-            end_tick=end_tick,
-            difficulty_index=difficulty_index,
-            level=level,
-        )
+        token_ids = self._window_token_ids(spec, chart)
 
         song_id = str(row["song_id"])
         mel, fps = self._load_features(song_id)
-        context_start_tick = max(0, start_tick - self.context_bars * TICKS_PER_BAR)
-        max_tick = max((e.tick for e in chart.events), default=end_tick)
-        context_end_tick = min(
-            max_tick + TICKS_PER_BAR,
-            end_tick + self.context_bars * TICKS_PER_BAR,
-        )
-        start_sec = chart.first + chart.seconds_at_tick(context_start_tick)
-        end_sec = chart.first + chart.seconds_at_tick(context_end_tick)
-        a = max(0, int(math.floor(start_sec * fps)))
-        b = min(len(mel), int(math.ceil(end_sec * fps)))
-        if b <= a:
-            a = min(max(0, a), max(0, len(mel) - 1))
-            b = min(len(mel), a + 1)
+        a, b = self._window_frame_bounds(spec, chart, fps, len(mel))
         window = mel[a:b].copy()
         if self.max_audio_frames and len(window) > self.max_audio_frames:
             # Do not silently center-crop: token labels cover the whole
@@ -182,6 +168,102 @@ class ChartWindowDataset(Dataset):
     def window_bounds(self, index: int) -> tuple[int, int]:
         spec = self.windows[index]
         return spec.start_bar * TICKS_PER_BAR, spec.end_bar * TICKS_PER_BAR
+
+    def _skip(self, reason: str) -> None:
+        self.skipped_windows[reason] = self.skipped_windows.get(reason, 0) + 1
+
+    def _window_token_ids(
+        self, spec: WindowSpec, chart: Chart
+    ) -> list[int]:
+        row = spec.row
+        difficulty_index = int(row.get("chart_index") or chart.index)
+        level = row.get("level_num")
+        if level is None:
+            level = row.get("level")
+        return self.tokenizer.encode_chart(
+            chart,
+            start_tick=spec.start_bar * TICKS_PER_BAR,
+            end_tick=spec.end_bar * TICKS_PER_BAR,
+            difficulty_index=difficulty_index,
+            level=level,
+        )
+
+    def _window_frame_bounds(
+        self,
+        spec: WindowSpec,
+        chart: Chart,
+        fps: float,
+        mel_frames: int,
+    ) -> tuple[int, int]:
+        """Mel slice for a window, including its audio context bars."""
+        start_tick = spec.start_bar * TICKS_PER_BAR
+        end_tick = spec.end_bar * TICKS_PER_BAR
+        context_start_tick = max(0, start_tick - self.context_bars * TICKS_PER_BAR)
+        max_tick = max((e.tick for e in chart.events), default=end_tick)
+        context_end_tick = min(
+            max_tick + TICKS_PER_BAR,
+            end_tick + self.context_bars * TICKS_PER_BAR,
+        )
+        start_sec = chart.first + chart.seconds_at_tick(context_start_tick)
+        end_sec = chart.first + chart.seconds_at_tick(context_end_tick)
+        a = max(0, int(math.floor(start_sec * fps)))
+        b = min(mel_frames, int(math.ceil(end_sec * fps)))
+        if b <= a:
+            a = min(max(0, a), max(0, mel_frames - 1))
+            b = min(mel_frames, a + 1)
+        return a, b
+
+    def _feature_meta(self, song_id: str) -> tuple[float, int] | None:
+        """(fps, mel frames) without keeping the full mel in the LRU cache."""
+        if not song_id:
+            return None
+        if song_id in self._feature_meta_cache:
+            return self._feature_meta_cache[song_id]
+        path = self.features_dir / f"{song_id}.npz"
+        if not path.exists():
+            self._feature_meta_cache[song_id] = None
+            return None
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                shape = data["mel"].shape
+                fps = float(data["fps"])
+        except (OSError, ValueError, KeyError, TypeError):
+            self._feature_meta_cache[song_id] = None
+            return None
+        if len(shape) != 2 or fps <= 0:
+            self._feature_meta_cache[song_id] = None
+            return None
+        meta = (fps, int(shape[0]))
+        self._feature_meta_cache[song_id] = meta
+        return meta
+
+    def _window_is_usable(self, spec: WindowSpec, chart: Chart) -> bool:
+        song_id = str(spec.row.get("song_id", ""))
+        meta = self._feature_meta(song_id)
+        if meta is None:
+            self._skip("missing_features")
+            return False
+        fps, mel_frames = meta
+        a, b = self._window_frame_bounds(spec, chart, fps, mel_frames)
+        if b <= a:
+            self._skip("empty_audio")
+            return False
+        if self.max_audio_frames and (b - a) > self.max_audio_frames:
+            self._skip("overlong_audio")
+            return False
+        if self.max_tokens:
+            try:
+                token_ids = self._window_token_ids(spec, chart)
+            except (KeyError, TypeError, ValueError):
+                self._skip("tokenize_error")
+                return False
+            # Training feeds tokens[:, :-1]; that prefix must fit the model's
+            # positional encoding.  Skip instead of failing on the dense
+            # chart that first exceeds max_tokens.
+            if len(token_ids) - 1 > self.max_tokens:
+                self._skip("overlong_tokens")
+                return False
+        return True
 
     def _load_chart(self, path: Path) -> Chart:
         cached = self._chart_cache.pop(path, None)

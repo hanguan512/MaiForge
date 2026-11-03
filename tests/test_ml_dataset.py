@@ -65,6 +65,7 @@ class TestChartWindowDataset(unittest.TestCase):
         self.tmp.cleanup()
 
     def _dataset(self, **kwargs) -> ChartWindowDataset:
+        features_dir = kwargs.pop("features_dir", self.features_dir)
         options = {
             "window_bars": 2,
             "stride_bars": 2,
@@ -75,7 +76,7 @@ class TestChartWindowDataset(unittest.TestCase):
         options.update(kwargs)
         return ChartWindowDataset(
             self.manifest,
-            self.features_dir,
+            features_dir,
             "train",
             EventTokenizer(),
             **options,
@@ -92,10 +93,24 @@ class TestChartWindowDataset(unittest.TestCase):
         self.assertEqual(len(dataset._feature_cache), 1)
         self.assertEqual(len(dataset._chart_cache), 1)
 
-    def test_overlong_window_raises_instead_of_cropping(self):
+    def test_overlong_window_is_skipped_at_init(self):
         dataset = self._dataset(max_audio_frames=8)
-        with self.assertRaisesRegex(ValueError, "max_audio_frames=8"):
-            _ = dataset[0]
+        self.assertEqual(len(dataset), 0)
+        self.assertGreater(dataset.skipped_windows.get("overlong_audio", 0), 0)
+
+    def test_missing_features_are_skipped_at_init(self):
+        dataset = self._dataset(features_dir=self.root / "missing-features")
+        self.assertEqual(len(dataset), 0)
+        self.assertGreater(
+            dataset.skipped_windows.get("missing_features", 0), 0
+        )
+
+    def test_overlong_token_window_is_skipped_at_init(self):
+        dataset = self._dataset(max_tokens=1)
+        self.assertEqual(len(dataset), 0)
+        self.assertGreater(
+            dataset.skipped_windows.get("overlong_tokens", 0), 0
+        )
 
 
 if __name__ == "__main__":
