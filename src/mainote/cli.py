@@ -183,12 +183,6 @@ def main(argv: list[str] | None = None) -> int:
     p_infer.add_argument("--artist", default=None)
     p_infer.set_defaults(func=_cmd_ml_infer)
 
-    p_web = sub.add_parser("web", help="launch the local training/inference web UI")
-    p_web.add_argument("--host", default="127.0.0.1")
-    p_web.add_argument("--port", type=int, default=8765)
-    p_web.add_argument("--no-browser", action="store_true")
-    p_web.set_defaults(func=_cmd_web)
-
     p_demo = sub.add_parser("demo", help="run synthetic click-track demo")
     p_demo.add_argument("--out", default="out/demo")
     p_demo.set_defaults(func=_cmd_demo)
@@ -617,26 +611,6 @@ def _cmd_ml_prepare(args) -> int:
         )
     )
     return 0 if not summary["errors"] else 1
-
-
-def _cmd_web(args) -> int:
-    try:
-        from .webapp.server import main as web_main
-    except ImportError:  # pragma: no cover - optional dependency
-        print(
-            "Flask is required for the web UI. "
-            "Install it with: pip install -e '.[web]'",
-            file=sys.stderr,
-        )
-        return 1
-    return int(
-        web_main(
-            host=args.host,
-            port=args.port,
-            open_browser=not args.no_browser,
-        )
-        or 0
-    )
 
 
 def _cmd_ml_train(args) -> int:
