@@ -125,6 +125,37 @@ class TestAudioPipeline(unittest.TestCase):
                 end = _choose_end(pos, "-", {pos}, random.Random(seed))
                 self.assertGreaterEqual(position_distance(pos, end), 2)
 
+    def test_slide_prob_override(self):
+        timing = _synthetic_timing()
+        sparse = generate_chart(
+            timing,
+            difficulty="master",
+            level=13.4,
+            seed=7,
+            config=RuleConfig(
+                difficulty="master",
+                level=13.4,
+                seed=7,
+                slide_prob=0.0,
+            ),
+        )
+        self.assertEqual(
+            sum(1 for e in sparse.chart.events if e.kind == "slide"), 0
+        )
+        with self.assertRaises(ValueError):
+            generate_chart(
+                timing,
+                difficulty="master",
+                level=13.4,
+                seed=7,
+                config=RuleConfig(
+                    difficulty="master",
+                    level=13.4,
+                    seed=7,
+                    slide_prob=1.5,
+                ),
+            )
+
     def test_density_scale_increases_notes(self):
         timing = _synthetic_timing()
         base = generate_chart(

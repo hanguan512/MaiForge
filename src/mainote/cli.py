@@ -82,6 +82,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="multiply the level/difficulty density target (e.g. 1.3)",
     )
+    p_gen.add_argument(
+        "--slide-prob",
+        type=float,
+        default=None,
+        help="probability that a selected tick becomes a slide (0-1; default from difficulty)",
+    )
     p_gen.add_argument("--seed", type=int, default=0)
     p_gen.add_argument("--sr", type=int, default=22050)
     p_gen.add_argument("--timing", help="use an existing timing JSON")
@@ -396,13 +402,18 @@ def _cmd_generate(args) -> int:
     from .generate import RuleConfig, generate_chart, maidata_for_chart
 
     config = None
-    if args.density is not None or args.density_scale is not None:
+    if (
+        args.density is not None
+        or args.density_scale is not None
+        or args.slide_prob is not None
+    ):
         config = RuleConfig(
             difficulty=args.difficulty,
             level=args.level,
             seed=args.seed,
             target_density=args.density,
             density_scale=args.density_scale,
+            slide_prob=args.slide_prob,
         )
     if args.timing:
         timing = TimingInfo.load(args.timing)

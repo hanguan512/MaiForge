@@ -196,6 +196,17 @@ def generate_chart(
     base["max_simultaneous"] = max(
         1, min(int(base["max_simultaneous"]), MAX_SIMULTANEOUS)
     )
+    for prob_key in (
+        "hold_prob",
+        "slide_prob",
+        "touch_prob",
+        "break_prob",
+        "ex_prob",
+        "each_prob",
+    ):
+        value = float(base.get(prob_key, 0.0))
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{prob_key} must be between 0 and 1")
     profile = profile_for_difficulty(name, cfg.level)
     density_scale = 1.0 if cfg.density_scale is None else float(cfg.density_scale)
     if density_scale <= 0:

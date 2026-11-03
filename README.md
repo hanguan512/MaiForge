@@ -85,6 +85,7 @@ PYTHONPATH=src .venv/bin/python -m mainote generate song.mp3 \
 
 密度默认由等级先验决定；可以用 `--density 5.2` 直接指定 notes/s，或用
 `--density-scale 1.3` 按倍数调整（例如 13.5 默认偏保守时可放大）。
+滑条比例默认由难度决定，可用 `--slide-prob 0.04` 单独降低（0–1）。
 
 如果 BPM 或强拍检测有误，可以手动覆盖后重新生成：
 
@@ -115,7 +116,7 @@ mainote stats <maidata|ir.json> [--json]
 mainote roundtrip <maidata> [--out recompiled.txt]
 mainote eval <generated> <reference> [--index N] [--tolerance 0.06]
 mainote analyze <audio> --out timing.json [--bpm N] [--first S]
-mainote generate <audio> -o maidata.txt [--difficulty master] [--level 12.9] [--density N] [--density-scale 1.3] [--timing timing.json]
+mainote generate <audio> -o maidata.txt [--difficulty master] [--level 12.9] [--density N] [--density-scale 1.3] [--slide-prob P] [--timing timing.json]
 mainote demo [--out out/demo]
 mainote dataset ingest <raw_dir> --out <processed_dir> [--align]
 mainote dataset report <processed_dir> [--out report.json] [--csv report.csv]
