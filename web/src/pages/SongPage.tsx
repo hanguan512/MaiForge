@@ -1,20 +1,14 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import {
-  Alert,
-  Box,
-  Button,
-  CircularProgress,
-  Paper,
-  Stack,
-  Typography,
-} from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import { ArrowBack, PlayArrow } from "@mui/icons-material";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, formatError } from "../api";
 import DifficultyChip from "../components/DifficultyChip";
 import Jacket from "../components/Jacket";
-import { NUMERIC_FONT, PALETTE } from "../theme";
+import Track from "../components/Track";
+import { accentFor, NUMERIC_FONT, PALETTE } from "../theme";
 import type { SongDetail } from "../types";
 
 function formatTime(value: number | null | undefined): string {
@@ -24,22 +18,33 @@ function formatTime(value: number | null | undefined): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function Tag({ children, tone = "default" }: { children: ReactNode; tone?: "default" | "warn" | "ok" }) {
+function Tag({
+  children,
+  tone = "default",
+}: {
+  children: ReactNode;
+  tone?: "default" | "warn" | "ok";
+}) {
+  const theme = useTheme();
   const color =
-    tone === "warn" ? "warning.main" : tone === "ok" ? "success.main" : "text.secondary";
+    tone === "warn"
+      ? accentFor(theme.palette.mode, PALETTE.gold)
+      : tone === "ok"
+        ? accentFor(theme.palette.mode, PALETTE.green)
+        : "text.secondary";
   return (
     <Box
       component="span"
       sx={{
         px: 0.75,
-        py: 0.25,
+        py: 0.15,
         border: 1,
-        borderColor: color,
+        borderColor: tone === "default" ? "divider" : color,
         color,
-        borderRadius: "2px",
-        fontSize: 11,
+        fontSize: 10.5,
         fontWeight: 600,
-        lineHeight: 1.4,
+        lineHeight: 1.5,
+        whiteSpace: "nowrap",
       }}
     >
       {children}
@@ -47,41 +52,44 @@ function Tag({ children, tone = "default" }: { children: ReactNode; tone?: "defa
   );
 }
 
-function Metric({ value, label }: { value: string | number; label: string }) {
+function Cell({
+  label,
+  value,
+  span,
+}: {
+  label: string;
+  value: ReactNode;
+  span?: number;
+}) {
   return (
-    <Box sx={{ minWidth: 62, textAlign: "right" }}>
+    <Box
+      sx={{
+        px: 2,
+        py: 1.4,
+        borderBottom: 1,
+        borderColor: "divider",
+        gridColumn: span
+          ? { xs: `span ${Math.min(span, 2)}`, sm: `span ${span}` }
+          : undefined,
+        minWidth: 0,
+      }}
+    >
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+        {label}
+      </Typography>
       <Typography
         sx={{
           fontFamily: NUMERIC_FONT,
           fontWeight: 700,
-          fontSize: 15,
+          fontSize: 16,
           fontVariantNumeric: "tabular-nums",
+          mt: 0.25,
+          wordBreak: "break-all",
         }}
       >
         {value}
       </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {label}
-      </Typography>
     </Box>
-  );
-}
-
-function DefinitionRow({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <Stack
-      direction="row"
-      justifyContent="space-between"
-      spacing={2}
-      sx={{ py: 0.9, borderBottom: 1, borderColor: "divider", "&:last-of-type": { borderBottom: "none" } }}
-    >
-      <Typography variant="body2" color="text.secondary" sx={{ flex: "none" }}>
-        {label}
-      </Typography>
-      <Typography variant="body2" sx={{ textAlign: "right", wordBreak: "break-all" }}>
-        {value}
-      </Typography>
-    </Stack>
   );
 }
 
@@ -123,7 +131,7 @@ export default function SongPage() {
   if (loading) {
     return (
       <Box sx={{ py: 12, textAlign: "center" }}>
-        <CircularProgress size={28} />
+        <CircularProgress size={26} />
       </Box>
     );
   }
@@ -131,7 +139,11 @@ export default function SongPage() {
     return (
       <Stack spacing={2}>
         <Alert severity="error">{error ?? "歌曲不存在"}</Alert>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/")} sx={{ alignSelf: "flex-start" }}>
+        <Button
+          startIcon={<ArrowBack />}
+          onClick={() => navigate("/")}
+          sx={{ alignSelf: "flex-start" }}
+        >
           返回曲库
         </Button>
       </Stack>
@@ -149,34 +161,46 @@ export default function SongPage() {
         startIcon={<ArrowBack />}
         onClick={() => navigate("/")}
         size="small"
-        sx={{ alignSelf: "flex-start" }}
+        sx={{ alignSelf: "flex-start", ml: -1 }}
       >
         返回曲库
       </Button>
 
       <Box
         sx={{
-          display: "flex",
-          gap: { xs: 2, md: 3 },
-          alignItems: { xs: "flex-start", md: "flex-end" },
-          flexWrap: "wrap",
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", sm: "168px minmax(0, 1fr)" },
+          gap: { xs: 2, sm: 3.5 },
+          alignItems: "end",
+          pb: 3,
           borderBottom: 1,
           borderColor: "divider",
-          pb: 2.5,
         }}
       >
-        <Jacket title={song.title} id={song.id} src={song.cover_url} size={148} radius={4} />
-        <Box sx={{ flexGrow: 1, minWidth: 240 }}>
+        <Box sx={{ width: { xs: 132, sm: 168 }, aspectRatio: "1 / 1", maxWidth: "100%" }}>
+          <Jacket
+            title={song.title}
+            id={song.id}
+            src={song.cover_url}
+            size="100%"
+            radius={2}
+          />
+        </Box>
+        <Box sx={{ minWidth: 0 }}>
           <Typography
-            variant="h3"
-            sx={{ fontSize: { xs: 30, md: 40 }, lineHeight: 1.15, wordBreak: "break-word" }}
+            sx={{
+              fontFamily: (theme) => theme.typography.h2.fontFamily,
+              fontSize: { xs: 30, md: 42 },
+              lineHeight: 1.15,
+              wordBreak: "break-word",
+            }}
           >
             {song.title}
           </Typography>
           <Typography variant="body1" color="text.secondary" sx={{ mt: 0.5 }}>
             {song.artist || "未知作者"}
           </Typography>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
             <Tag>{song.root}</Tag>
             {confidence !== null && confidence !== undefined ? (
               <Tag tone={confidence >= 0.5 ? "ok" : "warn"}>
@@ -186,128 +210,175 @@ export default function SongPage() {
             {!song.has_audio ? <Tag tone="warn">无音频</Tag> : null}
             {!song.ir_available ? <Tag tone="warn">缺少 IR</Tag> : null}
           </Stack>
+          {song.audio_url ? (
+            <Box
+              component="audio"
+              src={song.audio_url}
+              controls
+              sx={{ mt: 2, width: "100%", maxWidth: 420, height: 36 }}
+            />
+          ) : null}
         </Box>
-        {song.audio_url ? (
-          <Box sx={{ width: { xs: "100%", md: 340 }, flex: "none" }}>
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 0.5 }}
-            >
-              音频试听
-            </Typography>
-            <Box component="audio" src={song.audio_url} controls sx={{ width: "100%", height: 40 }} />
-          </Box>
-        ) : null}
       </Box>
 
       {song.errors.length ? <Alert severity="error">{song.errors.join("; ")}</Alert> : null}
       {song.warnings.length ? <Alert severity="warning">{song.warnings.join("; ")}</Alert> : null}
 
       <Box>
-        <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 1 }}>
-          <Typography variant="h5" sx={{ fontSize: 24 }}>
-            难度谱面
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            点击任意一行进入 MajdataView 风格预览
-          </Typography>
-        </Stack>
-        <Box sx={{ borderTop: 1, borderColor: "divider" }}>
-          {song.charts.map((chart) => (
-            <Box
-              key={chart.index}
-              role="button"
-              tabIndex={0}
-              onClick={() =>
-                navigate(
-                  `/viewer?root=${encodeURIComponent(song.root)}&id=${encodeURIComponent(song.id)}&index=${chart.index}`,
-                )
-              }
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
+        <Track
+          first
+          label="难度"
+          hint="点任意一行进入 MajdataView 预览"
+          action={
+            <Typography variant="caption" color="text.secondary">
+              {song.charts.length} 个难度
+            </Typography>
+          }
+        >
+          <Box sx={{ borderTop: 1, borderColor: "divider" }}>
+            {song.charts.map((chart) => (
+              <Box
+                key={chart.index}
+                role="button"
+                tabIndex={0}
+                onClick={() =>
                   navigate(
                     `/viewer?root=${encodeURIComponent(song.root)}&id=${encodeURIComponent(song.id)}&index=${chart.index}`,
-                  );
+                  )
                 }
-              }}
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: { xs: 1.5, md: 2.5 },
-                px: { xs: 0.5, md: 1 },
-                py: 1.5,
-                borderBottom: 1,
-                borderColor: "divider",
-                cursor: "pointer",
-                transition: "background-color 120ms ease",
-                "&:hover": { bgcolor: "action.hover" },
-                "&:focus-visible": { outline: `2px solid ${PALETTE.aqua}`, outlineOffset: -2 },
-              }}
-            >
-              <DifficultyChip difficulty={chart.difficulty} level={chart.level} size="medium" />
-              <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                  {chart.designer || "未署名"}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {chart.notes} 音符
-                  {chart.density ? ` / ${chart.density.toFixed(2)} n/s` : ""}
-                  {chart.duration ? ` / ${formatTime(chart.duration)}` : ""}
-                </Typography>
-              </Box>
-              <Stack
-                direction="row"
-                spacing={2.5}
-                sx={{ display: { xs: "none", sm: "flex" }, alignItems: "center" }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    navigate(
+                      `/viewer?root=${encodeURIComponent(song.root)}&id=${encodeURIComponent(song.id)}&index=${chart.index}`,
+                    );
+                  }
+                }}
+                sx={{
+                  position: "relative",
+                  display: "grid",
+                  gridTemplateColumns: "auto minmax(0, 1fr) auto",
+                  alignItems: "center",
+                  gap: { xs: 1.5, md: 2.5 },
+                  px: 1,
+                  py: 1.5,
+                  borderBottom: 1,
+                  borderColor: "divider",
+                  cursor: "pointer",
+                  transition: "background-color 140ms ease",
+                  "&::before": {
+                    content: '""',
+                    position: "absolute",
+                    left: 0,
+                    top: 9,
+                    bottom: 9,
+                    width: 2,
+                    bgcolor: "primary.main",
+                    opacity: 0,
+                    transition: "opacity 140ms ease",
+                  },
+                  "&:hover": { bgcolor: "action.hover" },
+                  "&:hover::before": { opacity: 1 },
+                  "&:focus-visible": { outline: `2px solid ${PALETTE.aqua}`, outlineOffset: -2 },
+                }}
               >
-                <Metric value={chart.notes} label="音符" />
-                <Metric value={chart.density ? chart.density.toFixed(2) : "-"} label="密度" />
-                <Metric value={formatTime(chart.duration)} label="时长" />
-              </Stack>
-              <Button size="small" startIcon={<PlayArrow />} sx={{ flex: "none" }}>
-                预览
-              </Button>
-            </Box>
-          ))}
-        </Box>
-        {!song.charts.length ? (
-          <Box sx={{ py: 4 }}>
-            <Alert severity="info">
-              没有可浏览的难度{song.ir_available ? "" : "(IR 文件缺失)"}。
-            </Alert>
+                <DifficultyChip
+                  difficulty={chart.difficulty}
+                  level={chart.level}
+                  size="medium"
+                />
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                    {chart.designer && chart.designer !== "-" ? chart.designer : "未署名"}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {chart.notes} 音符
+                    <Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>
+                      {chart.density ? ` · ${chart.density.toFixed(2)} n/s` : ""}
+                      {chart.duration ? ` · ${formatTime(chart.duration)}` : ""}
+                    </Box>
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={2} alignItems="center">
+                  <Stack
+                    direction="row"
+                    spacing={2.5}
+                    sx={{ display: { xs: "none", sm: "flex" } }}
+                  >
+                    {[
+                      ["密度", chart.density ? chart.density.toFixed(2) : "-"],
+                      ["时长", formatTime(chart.duration)],
+                    ].map(([label, value]) => (
+                      <Box key={label} sx={{ textAlign: "right", minWidth: 52 }}>
+                        <Typography
+                          sx={{
+                            fontFamily: NUMERIC_FONT,
+                            fontWeight: 700,
+                            fontSize: 14,
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {value}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {label}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Stack>
+                  <PlayArrow sx={{ fontSize: 19, color: "text.secondary" }} />
+                </Stack>
+              </Box>
+            ))}
           </Box>
-        ) : null}
-      </Box>
+          {!song.charts.length ? (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              没有可浏览的难度{song.ir_available ? "" : "（IR 文件缺失）"}。
+            </Alert>
+          ) : null}
+        </Track>
 
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-          gap: 2.5,
-        }}
-      >
-        <Paper sx={{ p: 2.5 }}>
-          <Typography variant="subtitle1" sx={{ mb: 1 }}>
-            时间轴
-          </Typography>
-          <DefinitionRow label="BPM" value={bpm !== null ? bpm.toFixed(2) : "-"} />
-          <DefinitionRow label="first" value={first !== null ? `${first.toFixed(3)}s` : "-"} />
-          <DefinitionRow label="时长" value={formatTime(duration)} />
-          <DefinitionRow label="目录" value={<code>{song.root}</code>} />
-        </Paper>
-        <Paper sx={{ p: 2.5 }}>
-          <Typography variant="subtitle1" sx={{ mb: 1 }}>
-            元数据
-          </Typography>
+        <Track label="时间轴" hint="来自音频分析结果" accent={PALETTE.gold}>
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(4, 1fr)" },
+              borderTop: 1,
+              borderLeft: 1,
+              borderColor: "divider",
+            }}
+          >
+            <Cell label="BPM" value={bpm !== null ? bpm.toFixed(2) : "-"} />
+            <Cell label="first" value={first !== null ? `${first.toFixed(3)} s` : "-"} />
+            <Cell label="时长" value={formatTime(duration)} />
+            <Cell
+              label="对齐"
+              value={confidence !== null && confidence !== undefined ? `${(confidence * 100).toFixed(0)}%` : "-"}
+            />
+            <Cell label="谱面" value={song.charts.length} />
+            <Cell label="音频" value={song.has_audio ? "已入库" : "缺失"} />
+            <Cell
+              label="目录"
+              value={<Box component="code" sx={{ fontSize: 11.5 }}>{song.root}</Box>}
+              span={2}
+            />
+          </Box>
+        </Track>
+
+        <Track label="元数据" hint="maidata 头部字段" accent={PALETTE.violet}>
           <Box
             component="pre"
             sx={{
               m: 0,
-              maxHeight: 240,
+              maxHeight: 260,
               overflow: "auto",
-              fontSize: 12,
+              px: 2,
+              py: 1.5,
+              border: 1,
+              borderColor: "divider",
+              bgcolor: (theme) =>
+                theme.palette.mode === "dark" ? "rgba(0,0,0,0.24)" : "rgba(17,24,39,0.045)",
+              fontSize: 11.5,
               lineHeight: 1.7,
               whiteSpace: "pre-wrap",
               color: "text.secondary",
@@ -315,7 +386,7 @@ export default function SongPage() {
           >
             {JSON.stringify(song.metadata, null, 2)}
           </Box>
-        </Paper>
+        </Track>
       </Box>
     </Stack>
   );

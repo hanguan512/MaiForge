@@ -40,7 +40,7 @@ const NAV: { label: string; hint: string; path: string; icon: SvgIconComponent }
   { label: "训练", hint: "P3 模型训练", path: "/train", icon: ModelTraining },
 ];
 
-const RAIL = 232;
+const RAIL = 216;
 
 function isActive(pathname: string, path: string): boolean {
   if (path === "/") {
@@ -63,19 +63,19 @@ function BrandMark({ size = 34 }: { size?: number }) {
   });
   return (
     <Box component="svg" viewBox="0 0 40 40" sx={{ width: size, height: size, flex: "none" }}>
-      <circle cx="20" cy="20" r="16.5" fill="none" stroke={PALETTE.pink} strokeWidth="1.6" opacity="0.85" />
-      <circle cx="20" cy="20" r="9.5" fill="none" stroke={PALETTE.aqua} strokeWidth="1.2" opacity="0.7" />
+      <circle cx="20" cy="20" r="16.5" fill="none" stroke={PALETTE.pink} strokeWidth="1.4" opacity="0.85" />
+      <circle cx="20" cy="20" r="9.5" fill="none" stroke={PALETTE.aqua} strokeWidth="1" opacity="0.65" />
       {dots.map((dot, index) => (
         <circle
           key={index}
           cx={dot.x}
           cy={dot.y}
-          r={index % 2 === 0 ? 2.1 : 1.5}
+          r={index % 2 === 0 ? 2.1 : 1.4}
           fill={index % 4 === 0 ? PALETTE.pink : PALETTE.text}
-          opacity={index % 4 === 0 ? 1 : 0.6}
+          opacity={index % 4 === 0 ? 1 : 0.55}
         />
       ))}
-      <circle cx="20" cy="20" r="2.6" fill={PALETTE.gold} />
+      <circle cx="20" cy="20" r="2.2" fill={PALETTE.gold} />
     </Box>
   );
 }
@@ -86,7 +86,7 @@ function Wordmark() {
       <Typography
         sx={{
           fontFamily: DISPLAY_FONT,
-          fontSize: 22,
+          fontSize: 21,
           lineHeight: 1.05,
           color: "text.primary",
           whiteSpace: "nowrap",
@@ -94,7 +94,11 @@ function Wordmark() {
       >
         MaiForge
       </Typography>
-      <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.14em" }}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ display: "block", mt: 0.35, letterSpacing: "0.16em" }}
+      >
         谱面工坊
       </Typography>
     </Box>
@@ -111,26 +115,70 @@ function RailLink({
   compact?: boolean;
 }) {
   const Icon = item.icon;
+  if (compact) {
+    return (
+      <Box
+        component={RouterLink}
+        to={item.path}
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 0.75,
+          px: 1.1,
+          py: 0.6,
+          flex: "none",
+          color: active ? "text.primary" : "text.secondary",
+          bgcolor: active ? alpha(PALETTE.pink, 0.1) : "transparent",
+          borderBottom: "2px solid",
+          borderColor: active ? "primary.main" : "transparent",
+          textDecoration: "none",
+          "&:focus-visible": { outline: `2px solid ${PALETTE.aqua}`, outlineOffset: -2 },
+        }}
+      >
+        <Icon sx={{ fontSize: 18, color: active ? PALETTE.pink : "inherit" }} />
+        <Typography sx={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}>
+          {item.label}
+        </Typography>
+      </Box>
+    );
+  }
+
   return (
     <Box
       component={RouterLink}
       to={item.path}
       sx={{
+        position: "relative",
         display: "flex",
         alignItems: "center",
-        gap: compact ? 0.75 : 1.5,
-        px: compact ? 1 : 2,
-        py: compact ? 0.75 : 1.1,
+        gap: 1.5,
+        pl: 2.25,
+        pr: 1.5,
+        py: 1.15,
         color: active ? "text.primary" : "text.secondary",
-        bgcolor: active ? "rgba(255,95,158,0.08)" : "transparent",
-        borderLeft: compact ? "none" : "3px solid",
-        borderBottom: compact ? "2px solid" : "none",
-        borderColor: active ? "primary.main" : "transparent",
         textDecoration: "none",
-        transition: "background-color 120ms ease, color 120ms ease",
+        background: active
+          ? `linear-gradient(90deg, ${alpha(PALETTE.pink, 0.1)}, transparent 72%)`
+          : "transparent",
+        transition: "background-color 140ms ease, color 140ms ease",
+        "&::before": {
+          content: '""',
+          position: "absolute",
+          left: -4,
+          top: "50%",
+          mt: "-3.5px",
+          width: 7,
+          height: 7,
+          borderRadius: "50%",
+          bgcolor: active ? PALETTE.pink : "background.paper",
+          border: active ? "none" : "1px solid",
+          borderColor: "divider",
+          boxShadow: active ? `0 0 0 4px ${alpha(PALETTE.pink, 0.1)}` : "none",
+          transition: "background-color 140ms ease, box-shadow 140ms ease",
+        },
         "&:hover": {
           color: "text.primary",
-          bgcolor: active ? "rgba(255,95,158,0.12)" : "action.hover",
+          bgcolor: active ? alpha(PALETTE.pink, 0.13) : "action.hover",
         },
         "&:focus-visible": {
           outline: `2px solid ${PALETTE.aqua}`,
@@ -138,16 +186,18 @@ function RailLink({
         },
       }}
     >
-      <Icon sx={{ fontSize: compact ? 20 : 19 }} />
+      <Icon sx={{ fontSize: 18, color: active ? PALETTE.pink : "inherit", flex: "none" }} />
       <Box sx={{ minWidth: 0 }}>
-        <Typography sx={{ fontSize: compact ? 13 : 14, fontWeight: 600, whiteSpace: "nowrap" }}>
+        <Typography sx={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.35 }}>
           {item.label}
         </Typography>
-        {!compact ? (
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
-            {item.hint}
-          </Typography>
-        ) : null}
+        <Typography
+          variant="caption"
+          color="text.disabled"
+          sx={{ display: "block", lineHeight: 1.35 }}
+        >
+          {item.hint}
+        </Typography>
       </Box>
     </Box>
   );
@@ -157,6 +207,7 @@ export default function App() {
   const [mode, setMode] = useState<"dark" | "light">("dark");
   const location = useLocation();
   const theme = useMemo(() => (mode === "dark" ? darkTheme : lightTheme), [mode]);
+  const toggleMode = () => setMode(mode === "dark" ? "light" : "dark");
 
   return (
     <ThemeProvider theme={theme}>
@@ -177,12 +228,25 @@ export default function App() {
             zIndex: 20,
           }}
         >
-          <Stack direction="row" spacing={1.5} alignItems="center" sx={{ px: 2, pt: 2.5, pb: 2 }}>
+          <Stack
+            direction="row"
+            spacing={1.4}
+            alignItems="center"
+            sx={{ px: 2.25, pt: 2.75, pb: 3 }}
+          >
             <BrandMark />
             <Wordmark />
           </Stack>
 
-          <Box sx={{ mt: 1.5, display: "flex", flexDirection: "column" }}>
+          <Box
+            sx={{
+              ml: 2.75,
+              borderLeft: "1px solid",
+              borderColor: "divider",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
             {NAV.map((item) => (
               <RailLink
                 key={item.path}
@@ -194,15 +258,15 @@ export default function App() {
 
           <Box sx={{ flexGrow: 1 }} />
 
-          <Box sx={{ px: 2, py: 2, borderTop: 1, borderColor: "divider" }}>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.25 }}>
+          <Box sx={{ px: 2.25, py: 2, borderTop: 1, borderColor: "divider" }}>
+            <Stack direction="row" spacing={1} alignItems="center">
               <Box
                 sx={{
-                  width: 7,
-                  height: 7,
+                  width: 6,
+                  height: 6,
                   borderRadius: "50%",
                   bgcolor: PALETTE.green,
-                  boxShadow: `0 0 0 3px rgba(93,211,158,0.14)`,
+                  boxShadow: `0 0 0 3px ${alpha(PALETTE.green, 0.14)}`,
                 }}
               />
               <Typography variant="caption" color="text.secondary">
@@ -212,18 +276,23 @@ export default function App() {
             <Typography
               variant="caption"
               color="text.disabled"
-              sx={{ display: "block", fontFamily: "monospace", fontSize: 11 }}
+              sx={{ display: "block", mt: 0.75, fontVariantNumeric: "tabular-nums" }}
             >
               127.0.0.1:8765
             </Typography>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 1.5 }}>
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              sx={{ mt: 1.25 }}
+            >
               <Typography variant="caption" color="text.disabled">
                 数据不离开本机
               </Typography>
               <Tooltip title={mode === "dark" ? "切换到浅色" : "切换到深色"}>
                 <IconButton
                   size="small"
-                  onClick={() => setMode(mode === "dark" ? "light" : "dark")}
+                  onClick={toggleMode}
                   aria-label={mode === "dark" ? "切换到浅色主题" : "切换到深色主题"}
                 >
                   {mode === "dark" ? <LightMode fontSize="small" /> : <DarkMode fontSize="small" />}
@@ -243,9 +312,8 @@ export default function App() {
               zIndex: 20,
               alignItems: "center",
               gap: 1,
-              height: 50,
+              height: 52,
               px: 2,
-              py: 0,
               bgcolor: (theme) => alpha(theme.palette.background.paper, 0.94),
               backdropFilter: "blur(10px)",
               borderBottom: 1,
@@ -256,7 +324,7 @@ export default function App() {
             }}
           >
             <BrandMark size={26} />
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
               {NAV.map((item) => (
                 <RailLink
                   key={item.path}
@@ -267,11 +335,7 @@ export default function App() {
               ))}
             </Box>
             <Box sx={{ flexGrow: 1 }} />
-            <IconButton
-              size="small"
-              onClick={() => setMode(mode === "dark" ? "light" : "dark")}
-              aria-label="切换主题"
-            >
+            <IconButton size="small" onClick={toggleMode} aria-label="切换主题">
               {mode === "dark" ? <LightMode fontSize="small" /> : <DarkMode fontSize="small" />}
             </IconButton>
           </Box>
@@ -279,21 +343,26 @@ export default function App() {
           <Box
             component="main"
             sx={{
-              px: { xs: 2, sm: 3, lg: 4 },
-              py: { xs: 2.5, md: 3.5 },
-              maxWidth: 1600,
+              px: { xs: 2, sm: 3, lg: 4.5 },
+              py: { xs: 3, md: 4.5 },
+              maxWidth: 1440,
               mx: "auto",
             }}
           >
-            <Routes>
-              <Route path="/" element={<BrowsePage />} />
-              <Route path="/datasets" element={<DatasetPage />} />
-              <Route path="/song" element={<SongPage />} />
-              <Route path="/viewer" element={<ViewerPage />} />
-              <Route path="/infer" element={<InferencePage />} />
-              <Route path="/train" element={<TrainingPage />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
+            <Box
+              key={location.pathname}
+              sx={{ animation: "mainote-rise 360ms cubic-bezier(0.22, 1, 0.36, 1) both" }}
+            >
+              <Routes>
+                <Route path="/" element={<BrowsePage />} />
+                <Route path="/datasets" element={<DatasetPage />} />
+                <Route path="/song" element={<SongPage />} />
+                <Route path="/viewer" element={<ViewerPage />} />
+                <Route path="/infer" element={<InferencePage />} />
+                <Route path="/train" element={<TrainingPage />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </Box>
           </Box>
         </Box>
       </Box>

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Alert, Box, Button, Divider, Stack, Typography } from "@mui/material";
 import { Download, StopCircle, Visibility } from "@mui/icons-material";
+import { useTheme } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
 import MetricChart from "./MetricChart";
 import { buildTrainingSeries, metricLabels } from "../metrics";
-import { NUMERIC_FONT, PALETTE } from "../theme";
+import { accentFor, NUMERIC_FONT, PALETTE } from "../theme";
 import type { JobSnapshot } from "../types";
 
 const STATUS: Record<string, { label: string; color: string }> = {
@@ -16,6 +17,8 @@ const STATUS: Record<string, { label: string; color: string }> = {
 };
 
 function StatusTag({ label, color }: { label: string; color: string }) {
+  const theme = useTheme();
+  const tone = accentFor(theme.palette.mode, color);
   return (
     <Box
       component="span"
@@ -26,15 +29,15 @@ function StatusTag({ label, color }: { label: string; color: string }) {
         px: 0.9,
         py: 0.35,
         border: 1,
-        borderColor: color,
-        color,
+        borderColor: tone,
+        color: tone,
         borderRadius: "2px",
         fontSize: 11,
         fontWeight: 700,
         lineHeight: 1.2,
       }}
     >
-      <Box sx={{ width: 5, height: 5, borderRadius: "50%", bgcolor: color }} />
+      <Box sx={{ width: 5, height: 5, borderRadius: "50%", bgcolor: tone }} />
       {label}
     </Box>
   );
@@ -74,9 +77,8 @@ export default function JobPanel({
           border: 1,
           borderStyle: "dashed",
           borderColor: "divider",
-          borderRadius: "4px",
           px: 2.5,
-          py: 3.5,
+          py: 4,
           textAlign: "center",
         }}
       >
@@ -91,15 +93,7 @@ export default function JobPanel({
   const result = snapshot?.result_maidata;
 
   return (
-    <Box
-      sx={{
-        border: 1,
-        borderColor: "divider",
-        borderRadius: "4px",
-        bgcolor: "background.paper",
-        p: { xs: 2, md: 2.5 },
-      }}
-    >
+    <Box>
       <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
         <StatusTag label={status.label} color={status.color} />
         <Typography variant="body2" color="text.secondary">
@@ -201,10 +195,10 @@ export default function JobPanel({
           p: 1.5,
           maxHeight: 300,
           overflow: "auto",
-          bgcolor: "rgba(0,0,0,0.34)",
+          bgcolor: (theme) =>
+            theme.palette.mode === "dark" ? "rgba(0,0,0,0.28)" : "rgba(17,24,39,0.045)",
           border: 1,
           borderColor: "divider",
-          borderRadius: "3px",
           fontSize: 11.5,
           lineHeight: 1.6,
           color: "text.secondary",

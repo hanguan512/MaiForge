@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ChangeEvent } from "react";
 import {
   Accordion,
   AccordionDetails,
@@ -21,7 +21,9 @@ import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import { api, formatError, postJson } from "../api";
 import JobPanel from "../components/JobPanel";
 import PageHeader from "../components/PageHeader";
+import Track from "../components/Track";
 import { useJob } from "../useJob";
+import { PALETTE } from "../theme";
 import type { Options } from "../types";
 
 interface FormState {
@@ -58,27 +60,19 @@ const INITIAL: FormState = {
   features: "",
 };
 
+const DIFFICULTIES = [
+  { value: "basic", label: "BASIC" },
+  { value: "advanced", label: "ADVANCED" },
+  { value: "expert", label: "EXPERT" },
+  { value: "master", label: "MASTER" },
+  { value: "remaster", label: "Re:MASTER" },
+];
+
 function optionalNumber(value: string): number | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function Panel({ children }: { children: ReactNode }) {
-  return (
-    <Box
-      sx={{
-        border: 1,
-        borderColor: "divider",
-        borderRadius: "4px",
-        bgcolor: "background.paper",
-        p: { xs: 2, md: 2.5 },
-      }}
-    >
-      {children}
-    </Box>
-  );
 }
 
 export default function InferencePage() {
@@ -90,7 +84,7 @@ export default function InferencePage() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [starting, setStarting] = useState(false);
-  const { snapshot, error: jobError, refresh } = useJob();
+  const { snapshot, error: jobError, refresh } = useJob(1200, ["infer"]);
 
   const load = async (): Promise<void> => {
     try {
@@ -186,11 +180,13 @@ export default function InferencePage() {
     }
   };
 
+  const busy = starting || Boolean(snapshot?.active);
+
   return (
-    <Stack spacing={2.5}>
+    <Stack spacing={3}>
       <PageHeader
         title="推理"
-        description="用 P3 checkpoint 把音频转成 maidata。生成完成后可以直接进入环形预览器检查,也可以继续训练新的模型。"
+        description="用 P3 checkpoint 把音频转成 maidata。生成完成后可以直接进入环形预览器检查，也可以继续训练新的模型。"
         actions={
           <>
             <Button component={RouterLink} to="/train">
@@ -210,22 +206,23 @@ export default function InferencePage() {
         </Alert>
       ) : null}
 
-      <Panel>
-        {loading ? (
-          <Box sx={{ py: 6, textAlign: "center" }}>
-            <CircularProgress size={26} />
-          </Box>
-        ) : (
-          <Stack spacing={2.25}>
-            <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2}>
-              <Typography variant="h6" sx={{ fontSize: 18 }}>
-                生成参数
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {options?.checkpoints.length ?? 0} 个 checkpoint / {options?.audio.length ?? 0} 个音频
-              </Typography>
-            </Stack>
-
+      <Box>
+        <Track
+          first
+          label="输入"
+          hint="音频文件与模型权重"
+          accent={PALETTE.aqua}
+          action={
+            <Typography variant="caption" color="text.secondary">
+              {options?.checkpoints.length ?? 0} 个 checkpoint · {options?.audio.length ?? 0} 个音频
+            </Typography>
+          }
+        >
+          {loading ? (
+            <Box sx={{ py: 5, textAlign: "center" }}>
+              <CircularProgress size={22} />
+            </Box>
+          ) : (
             <Box
               sx={{
                 display: "grid",
@@ -249,11 +246,28 @@ export default function InferencePage() {
                   </Select>
                 </FormControl>
                 <Stack direction="row" spacing={1} alignItems="center">
-                  <Button component="label" size="small" variant="outlined" startIcon={<Upload />} disabled={uploading}>
-                    {uploading ? "上传中..." : "上传音频"}
-                    <input type="file" hidden accept="audio/*" onChange={(event) => void handleUpload(event)} />
+                  <Button
+                    component="label"
+                    size="small"
+                    variant="outlined"
+                    startIcon={<Upload sx={{ fontSize: 16 }} />}
+                    disabled={uploading}
+                  >
+                    {uploading ? "上传中…" : "上传音频"}
+                    <input
+                      type="file"
+                      hidden
+                      accept="audio/*"
+                      onChange={(event) => void handleUpload(event)}
+                    />
                   </Button>
-                  <Typography variant="caption" color="text.secondary" noWrap>
+                  <Typography
+                    variant="caption"
+                    color="text.disabled"
+                    noWrap
+                    title={form.audio}
+                    sx={{ minWidth: 0 }}
+                  >
                     {form.audio || "未选择"}
                   </Typography>
                 </Stack>
@@ -274,38 +288,68 @@ export default function InferencePage() {
                 </Select>
               </FormControl>
             </Box>
+          )}
+        </Track>
+
+        <Track
+          label="谱面"
+          hint="难度、等级与运行位置"
+          accent={PALETTE.gold}
+          action={
+            <Typography variant="caption" color="text.secondary">
+              temperature {form.temperature} · top-k {form.topK}
+            </Typography>
+          }
+        >
+          <Stack spacing={2}>
+            <Box>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                目标难度
+              </Typography>
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                {DIFFICULTIES.map((item) => {
+                  const active = form.difficulty === item.value;
+                  return (
+                    <Button
+                      key={item.value}
+                      size="small"
+                      variant={active ? "contained" : "outlined"}
+                      onClick={() => update("difficulty", item.value)}
+                      sx={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: "0.04em",
+                        minWidth: 0,
+                        px: 1.25,
+                      }}
+                    >
+                      {item.label}
+                    </Button>
+                  );
+                })}
+              </Stack>
+            </Box>
 
             <Box
               sx={{
                 display: "grid",
                 gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" },
-                gap: 2,
+                gap: 1.5,
               }}
             >
-              <FormControl fullWidth size="small">
-                <InputLabel>难度</InputLabel>
-                <Select
-                  label="难度"
-                  value={form.difficulty}
-                  onChange={(event) => update("difficulty", event.target.value)}
-                >
-                  {["basic", "advanced", "expert", "master", "remaster"].map((value) => (
-                    <MenuItem key={value} value={value}>
-                      {value}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
               <TextField
                 fullWidth
-                size="small"
                 label="等级 (可选)"
                 value={form.level}
                 onChange={(event) => update("level", event.target.value)}
               />
               <FormControl fullWidth size="small">
                 <InputLabel>设备</InputLabel>
-                <Select label="设备" value={form.device} onChange={(event) => update("device", event.target.value)}>
+                <Select
+                  label="设备"
+                  value={form.device}
+                  onChange={(event) => update("device", event.target.value)}
+                >
                   <MenuItem value="auto">auto</MenuItem>
                   <MenuItem value="cuda">cuda</MenuItem>
                   <MenuItem value="cpu">cpu</MenuItem>
@@ -313,7 +357,6 @@ export default function InferencePage() {
               </FormControl>
               <TextField
                 fullWidth
-                size="small"
                 label="输出目录"
                 value={form.outputDir}
                 onChange={(event) => update("outputDir", event.target.value)}
@@ -321,15 +364,20 @@ export default function InferencePage() {
             </Box>
 
             <Accordion disableGutters>
-              <AccordionSummary expandIcon={<ExpandMore />}>
-                <Typography variant="body2">高级参数</Typography>
+              <AccordionSummary
+                expandIcon={<ExpandMore sx={{ fontSize: 18 }} />}
+                sx={{ borderTop: 1, borderColor: "divider" }}
+              >
+                <Typography variant="caption" color="text.secondary">
+                  采样与时间轴参数
+                </Typography>
               </AccordionSummary>
               <AccordionDetails>
                 <Box
                   sx={{
                     display: "grid",
                     gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" },
-                    gap: 2,
+                    gap: 1.5,
                   }}
                 >
                   {[
@@ -343,7 +391,6 @@ export default function InferencePage() {
                     <TextField
                       key={key}
                       fullWidth
-                      size="small"
                       label={label}
                       value={form[key as keyof FormState]}
                       onChange={(event) => update(key as keyof FormState, event.target.value)}
@@ -383,25 +430,31 @@ export default function InferencePage() {
               </AccordionDetails>
             </Accordion>
 
-            <Stack direction="row" spacing={2} alignItems="center">
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
               <Button
                 variant="contained"
                 size="large"
                 startIcon={<PlayArrow />}
-                disabled={starting || !form.audio || !form.checkpoint || Boolean(snapshot?.active)}
+                disabled={busy || !form.audio || !form.checkpoint}
                 onClick={() => void start()}
               >
                 {snapshot?.active ? "有任务正在运行" : "开始推理"}
               </Button>
               <Typography variant="caption" color="text.secondary">
-                任务在后台以 mainote ml infer 运行,可以留在这个页面看日志。
+                任务在后台以 mainote ml infer 运行，可以留在这个页面看日志。
               </Typography>
             </Stack>
           </Stack>
-        )}
-      </Panel>
+        </Track>
 
-      <JobPanel snapshot={snapshot} error={jobError} onStop={() => void postJson("/api/jobs/stop", {}).then(refresh)} />
+        <Track label="任务" hint="后台进程、实时日志与生成结果" accent={PALETTE.green}>
+          <JobPanel
+            snapshot={snapshot}
+            error={jobError}
+            onStop={() => void postJson("/api/jobs/stop", {}).then(refresh)}
+          />
+        </Track>
+      </Box>
     </Stack>
   );
 }

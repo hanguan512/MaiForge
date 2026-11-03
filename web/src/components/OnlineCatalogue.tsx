@@ -4,7 +4,6 @@ import {
   Box,
   Button,
   Checkbox,
-  Chip,
   CircularProgress,
   FormControl,
   FormControlLabel,
@@ -14,15 +13,11 @@ import {
   Select,
   Stack,
   Switch,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   Typography,
 } from "@mui/material";
 import { Cancel, CloudDownload, Search } from "@mui/icons-material";
+import { alpha } from "@mui/material/styles";
 import { api, formatError, postJson } from "../api";
 import Jacket from "./Jacket";
 import DifficultyChip from "./DifficultyChip";
@@ -56,27 +51,6 @@ type Filters = {
 };
 
 const EMPTY_FILTERS: Filters = { q: "", version: "", type: "", genre: "", sort: "id" };
-
-function SectionTitle({ title, detail }: { title: string; detail?: string }) {
-  return (
-    <Stack
-      direction="row"
-      alignItems="baseline"
-      justifyContent="space-between"
-      spacing={2}
-      sx={{ mb: 1.5 }}
-    >
-      <Typography variant="h6" sx={{ fontSize: 18 }}>
-        {title}
-      </Typography>
-      {detail ? (
-        <Typography variant="caption" color="text.secondary">
-          {detail}
-        </Typography>
-      ) : null}
-    </Stack>
-  );
-}
 
 function levelsOf(chart: WmcChart): { index: string; difficulty: string; level: string }[] {
   return Object.entries(chart.levels ?? {})
@@ -251,125 +225,128 @@ export default function OnlineCatalogue({
   const failed = jobResults.filter((item) => !item.ok).length;
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2.5}>
       <Box
-        sx={{
-          border: 1,
-          borderColor: "divider",
-          borderRadius: "4px",
-          bgcolor: "background.paper",
-          p: { xs: 2, md: 2.5 },
+        component="form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void runSearch(1, filters);
         }}
       >
-        <SectionTitle
-          title="在线谱库"
-          detail={data?.source ?? "AWMC-MaiArchive · download.wmc.pub"}
-        />
-
         <Box
-          component="form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void runSearch(1, filters);
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "1fr 1fr",
+              md: "minmax(200px, 2.2fr) 150px 100px 170px 110px auto",
+            },
+            gap: 1,
+            alignItems: "center",
           }}
         >
-          <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} flexWrap="wrap" useFlexGap>
-            <TextField
-              size="small"
-              label="曲名 / 别名 / ID"
-              value={filters.q}
-              onChange={(event) => setFilters({ ...filters, q: event.target.value })}
-              sx={{ minWidth: 220, flexGrow: 2 }}
-            />
-            <FormControl size="small" sx={{ minWidth: 150 }}>
-              <InputLabel id="wmc-version">版本</InputLabel>
-              <Select
-                labelId="wmc-version"
-                label="版本"
-                value={filters.version}
-                onChange={(event) => setFilters({ ...filters, version: event.target.value })}
-              >
-                <MenuItem value="">全部版本</MenuItem>
-                {versions.map((version) => (
-                  <MenuItem key={version.id} value={version.label}>
-                    {version.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <FormControl size="small" sx={{ minWidth: 110 }}>
-              <InputLabel id="wmc-type">类型</InputLabel>
-              <Select
-                labelId="wmc-type"
-                label="类型"
-                value={filters.type}
-                onChange={(event) => setFilters({ ...filters, type: event.target.value })}
-              >
-                <MenuItem value="">全部</MenuItem>
-                <MenuItem value="st">ST</MenuItem>
-                <MenuItem value="dx">DX</MenuItem>
-                <MenuItem value="utg">宴</MenuItem>
-              </Select>
-            </FormControl>
-            <FormControl size="small" sx={{ minWidth: 180 }}>
-              <InputLabel id="wmc-genre">分类</InputLabel>
-              <Select
-                labelId="wmc-genre"
-                label="分类"
-                value={filters.genre}
-                onChange={(event) => setFilters({ ...filters, genre: event.target.value })}
-              >
-                <MenuItem value="">全部分类</MenuItem>
-                {genres.map((genre) => (
-                  <MenuItem key={genre} value={genre}>
-                    {genre}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <FormControl size="small" sx={{ minWidth: 110 }}>
-              <InputLabel id="wmc-sort">排序</InputLabel>
-              <Select
-                labelId="wmc-sort"
-                label="排序"
-                value={filters.sort}
-                onChange={(event) => setFilters({ ...filters, sort: event.target.value })}
-              >
-                <MenuItem value="id">默认</MenuItem>
-                <MenuItem value="popular">热度</MenuItem>
-                <MenuItem value="title">标题</MenuItem>
-                <MenuItem value="version">版本</MenuItem>
-              </Select>
-            </FormControl>
-            <Button
-              type="submit"
-              variant="contained"
-              startIcon={searching ? <CircularProgress size={16} color="inherit" /> : <Search />}
-              disabled={searching}
+          <TextField
+            label="曲名 / 别名 / ID"
+            value={filters.q}
+            onChange={(event) => setFilters({ ...filters, q: event.target.value })}
+            sx={{ gridColumn: { xs: "1 / -1", md: "auto" } }}
+          />
+          <FormControl size="small" fullWidth sx={{ minWidth: 0 }}>
+            <InputLabel id="wmc-version">版本</InputLabel>
+            <Select
+              labelId="wmc-version"
+              label="版本"
+              value={filters.version}
+              onChange={(event) => setFilters({ ...filters, version: event.target.value })}
             >
-              搜索
-            </Button>
-          </Stack>
+              <MenuItem value="">全部版本</MenuItem>
+              {versions.map((version) => (
+                <MenuItem key={version.id} value={version.label}>
+                  {version.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" fullWidth sx={{ minWidth: 0 }}>
+            <InputLabel id="wmc-type">类型</InputLabel>
+            <Select
+              labelId="wmc-type"
+              label="类型"
+              value={filters.type}
+              onChange={(event) => setFilters({ ...filters, type: event.target.value })}
+            >
+              <MenuItem value="">全部</MenuItem>
+              <MenuItem value="st">ST</MenuItem>
+              <MenuItem value="dx">DX</MenuItem>
+              <MenuItem value="utg">宴</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl size="small" fullWidth sx={{ minWidth: 0 }}>
+            <InputLabel id="wmc-genre">分类</InputLabel>
+            <Select
+              labelId="wmc-genre"
+              label="分类"
+              value={filters.genre}
+              onChange={(event) => setFilters({ ...filters, genre: event.target.value })}
+            >
+              <MenuItem value="">全部分类</MenuItem>
+              {genres.map((genre) => (
+                <MenuItem key={genre} value={genre}>
+                  {genre}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" fullWidth sx={{ minWidth: 0 }}>
+            <InputLabel id="wmc-sort">排序</InputLabel>
+            <Select
+              labelId="wmc-sort"
+              label="排序"
+              value={filters.sort}
+              onChange={(event) => setFilters({ ...filters, sort: event.target.value })}
+            >
+              <MenuItem value="id">默认</MenuItem>
+              <MenuItem value="popular">热度</MenuItem>
+              <MenuItem value="title">标题</MenuItem>
+              <MenuItem value="version">版本</MenuItem>
+            </Select>
+          </FormControl>
+          <Button
+            type="submit"
+            variant="contained"
+            startIcon={searching ? <CircularProgress size={15} color="inherit" /> : <Search />}
+            disabled={searching}
+            sx={{ height: 40, gridColumn: { xs: "1 / -1", md: "auto" } }}
+          >
+            搜索
+          </Button>
         </Box>
+      </Box>
 
-        {searchError ? (
-          <Alert severity="error" sx={{ mt: 2 }}>
-            {searchError}
-          </Alert>
-        ) : null}
+      {searchError ? <Alert severity="error">{searchError}</Alert> : null}
 
-        <Stack
-          direction={{ xs: "column", sm: "row" }}
-          alignItems={{ sm: "center" }}
-          spacing={1.5}
-          sx={{ mt: 2, mb: 1 }}
-        >
-          <Typography variant="body2" color="text.secondary">
-            {data
-              ? `匹配 ${data.matched} 首 / 共 ${data.total} 首，第 ${page} / ${pages} 页`
-              : "输入关键词或直接翻页浏览谱库"}
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        alignItems={{ sm: "center" }}
+        spacing={1.5}
+        sx={{ mt: 0.5 }}
+      >
+        <Typography variant="caption" color="text.secondary">
+          {data
+            ? `匹配 ${data.matched} 首 / 共 ${data.total} 首 · 第 ${page} / ${pages} 页`
+            : "输入关键词或直接翻页浏览谱库"}
+        </Typography>
+        <Box sx={{ flexGrow: 1 }} />
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <Checkbox
+            size="small"
+            checked={allOnPage}
+            indeterminate={selectedOnPage > 0 && !allOnPage}
+            onChange={(event) => togglePage(event.target.checked)}
+            inputProps={{ "aria-label": "选择本页全部歌曲" }}
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
+            全选本页
           </Typography>
-          <Box sx={{ flexGrow: 1 }} />
           <Button
             size="small"
             disabled={searching || page <= 1}
@@ -385,193 +362,249 @@ export default function OnlineCatalogue({
             下一页
           </Button>
         </Stack>
+      </Stack>
 
-        <Box sx={{ overflowX: "auto", borderTop: 1, borderColor: "divider" }}>
-          {searching && !data ? (
-            <Box sx={{ py: 6, textAlign: "center" }}>
-              <CircularProgress size={26} />
-            </Box>
-          ) : (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell padding="checkbox">
-                    <Checkbox
-                      checked={allOnPage}
-                      indeterminate={selectedOnPage > 0 && !allOnPage}
-                      onChange={(event) => togglePage(event.target.checked)}
-                      inputProps={{ "aria-label": "选择本页全部歌曲" }}
-                    />
-                  </TableCell>
-                  <TableCell>歌曲</TableCell>
-                  <TableCell>版本 / 类型</TableCell>
-                  <TableCell align="right">BPM</TableCell>
-                  <TableCell>难度</TableCell>
-                  <TableCell align="right">下载</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {charts.map((chart) => (
-                  <TableRow key={chart.shortid} hover selected={Boolean(selected[chart.shortid])}>
-                    <TableCell padding="checkbox">
-                      <Checkbox
-                        checked={Boolean(selected[chart.shortid])}
-                        onChange={(event) => toggle(chart, event.target.checked)}
-                        inputProps={{ "aria-label": `选择 ${chart.title}` }}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={1.25} alignItems="center">
-                        <Jacket
-                          title={chart.title}
-                          id={chart.shortid}
-                          src={chart.cover_url}
-                          size={36}
-                          radius={2}
-                        />
-                        <Box sx={{ minWidth: 0 }}>
-                          <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                            {chart.displayTitle || chart.title}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary" noWrap>
-                            {chart.artist || "未知作者"} / {chart.shortid}
-                          </Typography>
-                        </Box>
-                      </Stack>
-                    </TableCell>
-                    <TableCell sx={{ whiteSpace: "nowrap" }}>
-                      <Stack direction="row" spacing={0.6} alignItems="center" useFlexGap>
-                        <Chip
-                          size="small"
-                          variant="outlined"
-                          label={chart.version || "-"}
-                          sx={{ height: 22 }}
-                        />
-                        <Chip
-                          size="small"
-                          label={chart.type || "-"}
-                          sx={{
-                            height: 22,
-                            bgcolor: chart.type === "DX" ? PALETTE.aqua : undefined,
-                            color: chart.type === "DX" ? "#04141c" : undefined,
-                          }}
-                        />
-                      </Stack>
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                      {chart.bpm ?? "-"}
-                    </TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                        {levelsOf(chart).map((item) => (
-                          <DifficultyChip
-                            key={item.index}
-                            difficulty={item.difficulty}
-                            level={item.level}
-                          />
-                        ))}
-                      </Stack>
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                      {chart.downloads ?? "-"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {!charts.length && !searching ? (
-                  <TableRow>
-                    <TableCell colSpan={6}>
-                      <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{ py: 4, textAlign: "center" }}
-                      >
-                        没有匹配的曲目。
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          )}
-        </Box>
-
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={2}
-          alignItems={{ md: "center" }}
-          sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}
-        >
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        alignItems={{ md: "center" }}
+        spacing={{ xs: 1, md: 1.5 }}
+        flexWrap="wrap"
+        useFlexGap
+        sx={{ borderTop: 1, borderColor: "divider", py: 1 }}
+      >
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
           <FormControlLabel
-            control={
-              <Switch checked={align} onChange={(event) => setAlign(event.target.checked)} />
-            }
-            label="导入后对齐 BPM"
+            control={<Switch size="small" checked={align} onChange={(event) => setAlign(event.target.checked)} />}
+            label={<Typography variant="caption">对齐 BPM</Typography>}
           />
           <FormControlLabel
             control={
               <Switch
+                size="small"
                 checked={includeVideo}
                 onChange={(event) => setIncludeVideo(event.target.checked)}
               />
             }
-            label="下载背景视频"
+            label={<Typography variant="caption">背景视频</Typography>}
           />
           <FormControlLabel
             control={
-              <Switch checked={force} onChange={(event) => setForce(event.target.checked)} />
+              <Switch size="small" checked={force} onChange={(event) => setForce(event.target.checked)} />
             }
-            label="强制覆盖已有"
+            label={<Typography variant="caption">覆盖已有</Typography>}
           />
-          <Box sx={{ flexGrow: 1 }} />
-          <Typography variant="caption" color="text.secondary">
-            已选 {selectedIds.length} 首（可跨页，单次最多 100 首）
-          </Typography>
-          <Button
-            variant="contained"
-            startIcon={starting ? <CircularProgress size={16} color="inherit" /> : <CloudDownload />}
-            disabled={starting || jobRunning || selectedIds.length === 0}
-            onClick={() => void startImport()}
-          >
-            {starting ? "提交中..." : `导入 ${selectedIds.length || ""} 首`}
-          </Button>
         </Stack>
+        <Box sx={{ flexGrow: 1 }} />
+        <Typography variant="caption" color="text.secondary">
+          已选 {selectedIds.length} 首（可跨页，单次最多 100 首）
+        </Typography>
+        <Button
+          variant="contained"
+          startIcon={starting ? <CircularProgress size={15} color="inherit" /> : <CloudDownload />}
+          disabled={starting || jobRunning || selectedIds.length === 0}
+          onClick={() => void startImport()}
+        >
+          {starting ? "提交中…" : selectedIds.length ? `导入 ${selectedIds.length} 首` : "导入所选"}
+        </Button>
+      </Stack>
 
-        {jobError ? (
-          <Alert severity="error" sx={{ mt: 2 }}>
-            {jobError}
-          </Alert>
+      <Box sx={{ borderTop: 1, borderColor: "divider" }}>
+        <Box
+          sx={{
+            display: { xs: "none", md: "grid" },
+            gridTemplateColumns: "24px minmax(0, 1fr) 100px 64px minmax(210px, auto)",
+            columnGap: 1.5,
+            alignItems: "center",
+            py: 0.75,
+            borderBottom: 1,
+            borderColor: "divider",
+            color: "text.disabled",
+          }}
+        >
+          <span />
+          <Typography variant="caption">歌曲</Typography>
+          <Typography variant="caption">版本 / 类型</Typography>
+          <Typography variant="caption" sx={{ textAlign: "right" }}>
+            BPM
+          </Typography>
+          <Typography variant="caption">难度</Typography>
+        </Box>
+
+        {searching && !data ? (
+          <Box sx={{ py: 8, textAlign: "center" }}>
+            <CircularProgress size={24} />
+          </Box>
+        ) : charts.length ? (
+          charts.map((chart) => {
+            const active = Boolean(selected[chart.shortid]);
+            return (
+              <Box
+                key={chart.shortid}
+                role="checkbox"
+                aria-checked={active}
+                aria-label={`选择 ${chart.displayTitle || chart.title}`}
+                tabIndex={0}
+                onClick={() => toggle(chart, !active)}
+                onKeyDown={(event) => {
+                  if (event.key === " " || event.key === "Enter") {
+                    event.preventDefault();
+                    toggle(chart, !active);
+                  }
+                }}
+                sx={{
+                  position: "relative",
+                  display: "grid",
+                  gridTemplateColumns: {
+                    xs: "24px minmax(0, 1fr)",
+                    sm: "24px minmax(0, 1fr) minmax(200px, auto)",
+                    md: "24px minmax(0, 1fr) 100px 64px minmax(210px, auto)",
+                  },
+                  columnGap: 1.5,
+                  alignItems: "center",
+                  py: 0.9,
+                  borderBottom: 1,
+                  borderColor: "divider",
+                  cursor: "pointer",
+                  bgcolor: active ? alpha(PALETTE.pink, 0.055) : "transparent",
+                  "&:hover": { bgcolor: active ? alpha(PALETTE.pink, 0.08) : alpha(PALETTE.text, 0.028) },
+                  "&:focus-visible": {
+                    outline: `2px solid ${PALETTE.aqua}`,
+                    outlineOffset: -2,
+                  },
+                  "&::before": {
+                    content: '""',
+                    position: "absolute",
+                    left: 0,
+                    top: 6,
+                    bottom: 6,
+                    width: 2,
+                    bgcolor: "primary.main",
+                    opacity: active ? 1 : 0,
+                  },
+                }}
+              >
+                <Checkbox
+                  size="small"
+                  checked={active}
+                  onChange={(event) => toggle(chart, event.target.checked)}
+                  onClick={(event) => event.stopPropagation()}
+                  inputProps={{ "aria-label": `选择 ${chart.title}` }}
+                  sx={{ p: 0.25 }}
+                />
+                <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
+                  <Jacket
+                    title={chart.title}
+                    id={chart.shortid}
+                    src={chart.cover_url}
+                    size={38}
+                    radius={1}
+                  />
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography
+                      sx={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.35 }}
+                      noWrap
+                      title={chart.displayTitle || chart.title}
+                    >
+                      {chart.displayTitle || chart.title}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>
+                      {chart.artist || "未知作者"}
+                      <Box component="span" sx={{ color: "text.disabled" }}>
+                        {"  /  "}
+                        {chart.shortid}
+                      </Box>
+                    </Typography>
+                  </Box>
+                </Stack>
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  alignItems="center"
+                  sx={{ display: { xs: "none", md: "flex" } }}
+                >
+                  <Typography
+                    variant="caption"
+                    sx={{ color: "text.secondary", minWidth: 28 }}
+                  >
+                    {chart.version || "-"}
+                  </Typography>
+                  <Box
+                    component="span"
+                    sx={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      px: 0.5,
+                      py: 0.1,
+                      border: 1,
+                      borderColor: chart.type === "DX" ? PALETTE.aqua : "divider",
+                      color: chart.type === "DX" ? PALETTE.aqua : "text.secondary",
+                    }}
+                  >
+                    {chart.type || "-"}
+                  </Box>
+                </Stack>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    display: { xs: "none", md: "block" },
+                    textAlign: "right",
+                    fontFamily: "inherit",
+                    fontVariantNumeric: "tabular-nums",
+                    color: "text.secondary",
+                  }}
+                >
+                  {chart.bpm ?? "-"}
+                </Typography>
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  flexWrap="wrap"
+                  useFlexGap
+                  sx={{ display: { xs: "none", sm: "flex" } }}
+                >
+                  {levelsOf(chart).map((item) => (
+                    <DifficultyChip
+                      key={item.index}
+                      difficulty={item.difficulty}
+                      level={item.level}
+                    />
+                  ))}
+                </Stack>
+              </Box>
+            );
+          })
+        ) : !searching ? (
+          <Box sx={{ py: 7, textAlign: "center" }}>
+            <Typography variant="body2" color="text.secondary">
+              没有匹配的曲目。
+            </Typography>
+          </Box>
         ) : null}
       </Box>
 
+      {jobError ? <Alert severity="error">{jobError}</Alert> : null}
+
       {job ? (
-        <Box
-          sx={{
-            border: 1,
-            borderColor: "divider",
-            borderRadius: "4px",
-            bgcolor: "background.paper",
-            p: { xs: 2, md: 2.5 },
-          }}
-        >
-          <SectionTitle
-            title="在线导入进度"
-            detail={
-              job.status === "running"
+        <Box sx={{ pt: 2, borderTop: 1, borderColor: "divider" }}>
+          <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 1 }}>
+            <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
+              {job.status === "running"
                 ? "正在下载并入库"
                 : job.status === "stopping"
-                  ? "正在停止..."
+                  ? "正在停止…"
                   : job.status === "cancelled"
                     ? "已取消"
-                    : "已完成"
-            }
-          />
-          <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 1 }}>
+                    : "导入完成"}
+            </Typography>
             <LinearProgress
               variant="determinate"
               value={job.total ? Math.min(100, (job.completed / job.total) * 100) : 0}
               sx={{ flexGrow: 1 }}
             />
-            <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }}>
+            <Typography
+              variant="caption"
+              sx={{ fontVariantNumeric: "tabular-nums", minWidth: 52 }}
+            >
               {job.completed} / {job.total}
             </Typography>
             {jobRunning ? (
@@ -579,7 +612,7 @@ export default function OnlineCatalogue({
                 size="small"
                 color="error"
                 variant="outlined"
-                startIcon={<Cancel />}
+                startIcon={<Cancel sx={{ fontSize: 16 }} />}
                 disabled={job.status === "stopping"}
                 onClick={() => void cancelImport()}
               >
@@ -587,54 +620,70 @@ export default function OnlineCatalogue({
               </Button>
             ) : null}
           </Stack>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
             {job.current ? `当前：${job.current}` : "任务已结束"}
-            {jobResults.length
-              ? ` · 成功 ${succeeded} · 跳过 ${skipped} · 失败 ${failed}`
-              : ""}
+            {jobResults.length ? ` · 成功 ${succeeded} · 跳过 ${skipped} · 失败 ${failed}` : ""}
           </Typography>
 
           {jobResults.length ? (
-            <Box sx={{ overflowX: "auto", borderTop: 1, borderColor: "divider" }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>ID</TableCell>
-                    <TableCell>状态</TableCell>
-                    <TableCell>歌曲</TableCell>
-                    <TableCell align="right">谱面数</TableCell>
-                    <TableCell>信息</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {jobResults.map((result, index) => {
-                    const status = resultStatus(result);
-                    const messages = [...result.errors, ...result.warnings].join("; ");
-                    return (
-                      <TableRow key={`${result.shortid}-${index}`}>
-                        <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>
-                          {result.shortid}
-                        </TableCell>
-                        <TableCell>
-                          <Chip size="small" color={status.color} label={status.label} />
-                        </TableCell>
-                        <TableCell>
-                          {result.title ?? result.song_id ?? "-"}
-                          {result.song_id && result.title
-                            ? ` (${result.song_id})`
-                            : ""}
-                        </TableCell>
-                        <TableCell align="right">{result.chart_count ?? "-"}</TableCell>
-                        <TableCell
-                          sx={{ fontSize: 12, color: result.ok ? "text.secondary" : "error.main" }}
+            <Box sx={{ borderTop: 1, borderColor: "divider" }}>
+              {jobResults.map((result, index) => {
+                const status = resultStatus(result);
+                const messages = [...result.errors, ...result.warnings].join("; ");
+                return (
+                  <Box
+                    key={`${result.shortid}-${index}`}
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: "64px minmax(0, 1fr) auto",
+                      gap: 1.5,
+                      alignItems: "baseline",
+                      py: 0.75,
+                      borderBottom: 1,
+                      borderColor: "divider",
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      sx={{ color: "text.disabled", fontVariantNumeric: "tabular-nums" }}
+                    >
+                      {result.shortid}
+                    </Typography>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" noWrap>
+                        {result.title ?? result.song_id ?? "-"}
+                      </Typography>
+                      {messages ? (
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            display: "block",
+                            color: result.ok ? "text.secondary" : "error.main",
+                            wordBreak: "break-word",
+                          }}
                         >
-                          {messages || "-"}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                          {messages}
+                        </Typography>
+                      ) : null}
+                    </Box>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color:
+                          status.color === "success"
+                            ? PALETTE.green
+                            : status.color === "warning"
+                              ? PALETTE.gold
+                              : PALETTE.red,
+                        fontWeight: 700,
+                      }}
+                    >
+                      {status.label}
+                      {result.chart_count ? ` ${result.chart_count}` : ""}
+                    </Typography>
+                  </Box>
+                );
+              })}
             </Box>
           ) : null}
         </Box>

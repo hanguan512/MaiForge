@@ -288,9 +288,11 @@ export default function ViewerPage() {
                 sx={{
                   fontSize: { xs: 22, md: 28 },
                   lineHeight: 1.2,
-                  whiteSpace: "nowrap",
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
                   overflow: "hidden",
-                  textOverflow: "ellipsis",
+                  wordBreak: "break-word",
                 }}
               >
                 {chart.title}
@@ -351,6 +353,7 @@ export default function ViewerPage() {
               variant="outlined"
               startIcon={<Refresh />}
               onClick={() => setViewerNonce((value) => value + 1)}
+              sx={{ color: "text.secondary", borderColor: "divider" }}
             >
               重新载入
             </Button>
@@ -373,13 +376,14 @@ export default function ViewerPage() {
 
         <Box
           sx={{
-            border: 1,
+            borderTop: { xs: 1, lg: 0 },
+            borderLeft: { lg: 1 },
             borderColor: "divider",
-            borderRadius: "4px",
-            bgcolor: "background.paper",
             overflow: "hidden",
             position: { lg: "sticky" },
             top: { lg: 16 },
+            pt: { xs: 2, lg: 0 },
+            pl: { lg: 2.5 },
           }}
         >
           <Tabs
@@ -567,10 +571,10 @@ export default function ViewerPage() {
                     overflow: "auto",
                     fontSize: 12,
                     lineHeight: 1.6,
-                    bgcolor: "rgba(0,0,0,0.32)",
+                    bgcolor: (theme) =>
+                theme.palette.mode === "dark" ? "rgba(0,0,0,0.24)" : "rgba(17,24,39,0.045)",
                     border: 1,
                     borderColor: "divider",
-                    borderRadius: "3px",
                     color: "text.secondary",
                   }}
                 >

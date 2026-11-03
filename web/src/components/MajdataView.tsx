@@ -80,7 +80,6 @@ export default function MajdataView({
         bgcolor: "#07080d",
         border: 1,
         borderColor: "divider",
-        borderRadius: "4px",
         overflow: "hidden",
       }}
     >

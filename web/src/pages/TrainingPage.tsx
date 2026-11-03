@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import {
   Alert,
   Box,
@@ -16,11 +15,6 @@ import {
   Select,
   Stack,
   Switch,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   Typography,
 } from "@mui/material";
@@ -32,9 +26,11 @@ import JobPanel from "../components/JobPanel";
 import MetricChart from "../components/MetricChart";
 import ModelArchitectureView from "../components/ModelArchitecture";
 import PageHeader from "../components/PageHeader";
+import StatStrip from "../components/StatStrip";
+import Track from "../components/Track";
 import TrainingDataPanel from "../components/TrainingDataPanel";
 import { buildTrainingSeries, metricLabels } from "../metrics";
-import { NUMERIC_FONT } from "../theme";
+import { NUMERIC_FONT, PALETTE } from "../theme";
 import {
   DEFAULT_HYPERPARAMS,
   architectureQuery,
@@ -72,22 +68,6 @@ function formatMetric(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(4) : "-";
 }
 
-function Panel({ children }: { children: ReactNode }) {
-  return (
-    <Box
-      sx={{
-        border: 1,
-        borderColor: "divider",
-        borderRadius: "4px",
-        bgcolor: "background.paper",
-        p: { xs: 2, md: 2.5 },
-      }}
-    >
-      {children}
-    </Box>
-  );
-}
-
 export default function TrainingPage() {
   const navigate = useNavigate();
   const [options, setOptions] = useState<Options | null>(null);
@@ -117,7 +97,7 @@ export default function TrainingPage() {
   const [archError, setArchError] = useState<string | null>(null);
   const configLoaded = useRef(false);
   const archSeq = useRef(0);
-  const { snapshot, error: jobError, refresh } = useJob();
+  const { snapshot, error: jobError, refresh } = useJob(1200, ["train", "prepare"]);
   const busy = starting || Boolean(snapshot?.active);
 
   const loadConfig = async (path: string): Promise<void> => {
@@ -338,10 +318,10 @@ export default function TrainingPage() {
   );
 
   return (
-    <Stack spacing={2.5}>
+    <Stack spacing={3}>
       <PageHeader
         title="训练"
-        description="从已下载的数据集中选择歌曲、准备样本与特征、调整超参数，再启动 mainote ml train。正式训练建议放到 GPU 服务器上跑。"
+        description="从数据集里选歌、准备样本与特征、调整超参数，再启动 mainote ml train。正式训练请放到 GPU 服务器运行。"
         actions={
           <Button startIcon={<Refresh />} onClick={() => void load()} disabled={loading}>
             刷新
@@ -349,269 +329,314 @@ export default function TrainingPage() {
         }
       />
 
+      <StatStrip
+        items={[
+          {
+            label: "计算设备",
+            value: options?.gpu ? options.gpu.name : "CPU",
+            accent: options?.gpu ? PALETTE.green : PALETTE.gold,
+            detail: options?.gpu
+              ? `${options.gpu.used_mb} / ${options.gpu.total_mb} MB · ${options.gpu.util}%`
+              : "未检测到 NVIDIA GPU",
+          },
+          { label: "训练配置", value: options?.configs.length ?? "-" },
+          { label: "历史 run", value: options?.runs.length ?? "-" },
+          { label: "checkpoint", value: options?.checkpoints.length ?? "-" },
+          {
+            label: "已选歌曲",
+            value: `${selectedSongs.length}/${trainData?.songs.length ?? 0}`,
+            accent: PALETTE.aqua,
+          },
+        ]}
+      />
+
       {error ? <Alert severity="error">{error}</Alert> : null}
       {options && !options.gpu ? (
         <Alert severity="info">
-          当前机器没有检测到 NVIDIA GPU。正式训练请在 GPU 服务器运行;这里可以先用 dry run 或很小的 max_steps 验证流程。
+          当前机器没有检测到 NVIDIA GPU。正式训练请在 GPU 服务器运行；这里可以先用 dry run
+          或很小的 max_steps 验证流程。
         </Alert>
       ) : null}
 
-      <Panel>
-        {loading ? (
-          <Box sx={{ py: 6, textAlign: "center" }}>
-            <CircularProgress size={26} />
-          </Box>
-        ) : (
-          <Stack spacing={2.25}>
-            <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2}>
-              <Typography variant="h6" sx={{ fontSize: 18 }}>
-                启动配置
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {options?.runs.length ?? 0} 条历史 run / {options?.checkpoints.length ?? 0} 个 checkpoint
-              </Typography>
-            </Stack>
-
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", md: "repeat(4, 1fr)" },
-                gap: 2,
-              }}
-            >
-              <FormControl fullWidth size="small" sx={{ gridColumn: { md: "span 2" } }}>
-                <InputLabel>训练配置</InputLabel>
-                <Select
-                  label="训练配置"
-                  value={form.config}
-                  onChange={(event) => {
-                    update("config", event.target.value);
-                    void loadConfig(event.target.value);
-                  }}
-                >
-                  {options?.configs.map((item) => (
-                    <MenuItem key={item.value} value={item.value}>
-                      {item.label}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth size="small">
-                <InputLabel>设备</InputLabel>
-                <Select
-                  label="设备"
-                  value={form.device}
-                  onChange={(event) => update("device", event.target.value)}
-                >
-                  <MenuItem value="auto">auto</MenuItem>
-                  <MenuItem value="cuda">cuda</MenuItem>
-                  <MenuItem value="cpu">cpu</MenuItem>
-                </Select>
-              </FormControl>
-              <TextField
-                fullWidth
-                size="small"
-                label="输出目录"
-                value={form.outputDir}
-                onChange={(event) => update("outputDir", event.target.value)}
-              />
-
-              <TextField
-                fullWidth
-                size="small"
-                label="max_steps (可选)"
-                value={form.maxSteps}
-                onChange={(event) => update("maxSteps", event.target.value)}
-              />
-              <TextField
-                fullWidth
-                size="small"
-                label="num_workers (可选)"
-                value={form.numWorkers}
-                onChange={(event) => update("numWorkers", event.target.value)}
-              />
-              <FormControl fullWidth size="small" sx={{ gridColumn: { md: "span 2" } }}>
-                <InputLabel>恢复 checkpoint (可选)</InputLabel>
-                <Select
-                  label="恢复 checkpoint (可选)"
-                  value={form.resume}
-                  onChange={(event) => update("resume", event.target.value)}
-                >
-                  <MenuItem value="">从头开始</MenuItem>
-                  {options?.checkpoints.map((item) => (
-                    <MenuItem key={item.value} value={item.value}>
-                      {item.label}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Box>
-
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              spacing={2}
-              alignItems={{ sm: "center" }}
-            >
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={form.dryRun}
-                    onChange={(event) => update("dryRun", event.target.checked)}
-                  />
-                }
-                label={<Typography variant="body2">dry run</Typography>}
-              />
-              <Typography variant="caption" color="text.secondary">
-                只检查数据与配置,不写 checkpoint
-              </Typography>
-              <Box sx={{ flexGrow: 1 }} />
-              <Button
-                variant="contained"
-                size="large"
-                startIcon={<PlayArrow />}
-                disabled={busy || !form.config || !selectedSongs.length}
-                onClick={() => void start()}
-              >
-                {snapshot?.active ? "有任务正在运行" : "开始训练"}
-              </Button>
-            </Stack>
-          </Stack>
-        )}
-      </Panel>
-
-      <TrainingDataPanel
-        data={trainData}
-        loading={dataLoading}
-        root={dataRoot}
-        selected={selectedSongs}
-        busy={busy}
-        overwrite={overwriteFeatures}
-        onRootChange={changeRoot}
-        onToggle={toggleSong}
-        onSelectReady={selectReadySongs}
-        onClear={() => setSelectedSongs([])}
-        onPrepare={() => void prepare()}
-        onRefresh={() => void loadTrainData(dataRoot || undefined)}
-        onOverwriteChange={setOverwriteFeatures}
-      />
-
-      <HyperparamPanel
-        form={hyper}
-        valRatio={valRatio}
-        onValRatioChange={setValRatio}
-        onChange={updateHyper}
-        onReset={() => void loadConfig(form.config)}
-      />
-
-      <Panel>
-        <Stack
-          direction={{ xs: "column", sm: "row" }}
-          alignItems={{ sm: "baseline" }}
-          justifyContent="space-between"
-          spacing={1}
+      <Box>
+        <Track
+          first
+          label="数据"
+          hint="按歌曲切分 train / val，同一首歌不会跨集"
         >
-          <Box>
-            <Typography variant="h6" sx={{ fontSize: 18 }}>
-              网络结构
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              按「模型结构」超参数实时估算；未训练 checkpoint 时仅表示待构建的模型。
-            </Typography>
-          </Box>
-        </Stack>
-        <Box sx={{ mt: 2 }}>
+          <TrainingDataPanel
+            data={trainData}
+            loading={dataLoading}
+            root={dataRoot}
+            selected={selectedSongs}
+            busy={busy}
+            overwrite={overwriteFeatures}
+            onRootChange={changeRoot}
+            onToggle={toggleSong}
+            onSelectReady={selectReadySongs}
+            onClear={() => setSelectedSongs([])}
+            onPrepare={() => void prepare()}
+            onRefresh={() => void loadTrainData(dataRoot || undefined)}
+            onOverwriteChange={setOverwriteFeatures}
+          />
+        </Track>
+
+        <Track
+          label="启动"
+          hint="覆盖值写入 runs/<run>/train_config.yaml"
+          accent={PALETTE.aqua}
+        >
+          {loading ? (
+            <Box sx={{ py: 5, textAlign: "center" }}>
+              <CircularProgress size={22} />
+            </Box>
+          ) : (
+            <Stack spacing={2}>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    sm: "1fr 1fr",
+                    lg: "minmax(220px, 2fr) repeat(3, minmax(120px, 1fr))",
+                  },
+                  gap: 1.5,
+                }}
+              >
+                <FormControl fullWidth size="small">
+                  <InputLabel>训练配置</InputLabel>
+                  <Select
+                    label="训练配置"
+                    value={form.config}
+                    onChange={(event) => {
+                      update("config", event.target.value);
+                      void loadConfig(event.target.value);
+                    }}
+                  >
+                    {options?.configs.map((item) => (
+                      <MenuItem key={item.value} value={item.value}>
+                        {item.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth size="small">
+                  <InputLabel>设备</InputLabel>
+                  <Select
+                    label="设备"
+                    value={form.device}
+                    onChange={(event) => update("device", event.target.value)}
+                  >
+                    <MenuItem value="auto">auto</MenuItem>
+                    <MenuItem value="cuda">cuda</MenuItem>
+                    <MenuItem value="cpu">cpu</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField
+                  fullWidth
+                  label="输出目录"
+                  value={form.outputDir}
+                  onChange={(event) => update("outputDir", event.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  label="max_steps (可选)"
+                  value={form.maxSteps}
+                  onChange={(event) => update("maxSteps", event.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  label="num_workers (可选)"
+                  value={form.numWorkers}
+                  onChange={(event) => update("numWorkers", event.target.value)}
+                />
+                <FormControl fullWidth size="small" sx={{ gridColumn: { lg: "span 2" } }}>
+                  <InputLabel>恢复 checkpoint (可选)</InputLabel>
+                  <Select
+                    label="恢复 checkpoint (可选)"
+                    value={form.resume}
+                    onChange={(event) => update("resume", event.target.value)}
+                  >
+                    <MenuItem value="">从头开始</MenuItem>
+                    {options?.checkpoints.map((item) => (
+                      <MenuItem key={item.value} value={item.value}>
+                        {item.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Box>
+
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={2}
+                alignItems={{ sm: "center" }}
+              >
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={form.dryRun}
+                      onChange={(event) => update("dryRun", event.target.checked)}
+                    />
+                  }
+                  label={<Typography variant="body2">dry run</Typography>}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  只检查数据与配置，不写 checkpoint
+                </Typography>
+                <Box sx={{ flexGrow: 1 }} />
+                <Button
+                  variant="contained"
+                  size="large"
+                  startIcon={<PlayArrow />}
+                  disabled={busy || !form.config || !selectedSongs.length}
+                  onClick={() => void start()}
+                >
+                  {snapshot?.active ? "有任务正在运行" : `开始训练 · ${selectedSongs.length} 首`}
+                </Button>
+              </Stack>
+            </Stack>
+          )}
+        </Track>
+
+        <Track label="参数" hint="留空表示沿用配置文件中的值">
+          <HyperparamPanel
+            form={hyper}
+            valRatio={valRatio}
+            onValRatioChange={setValRatio}
+            onChange={updateHyper}
+            onReset={() => void loadConfig(form.config)}
+          />
+        </Track>
+
+        <Track label="结构" hint="按超参数实时估算，未训练时不代表已有模型">
           <ModelArchitectureView
             architecture={architecture}
             loading={archLoading}
             error={archError}
           />
-        </Box>
-      </Panel>
+        </Track>
 
-      <JobPanel
-        snapshot={snapshot}
-        error={jobError}
-        onStop={() => void postJson("/api/jobs/stop", {}).then(refresh)}
-      />
+        <Track label="任务" hint="同一时间只运行一个后台任务" accent={PALETTE.green}>
+          <JobPanel
+            snapshot={snapshot}
+            error={jobError}
+            onStop={() => void postJson("/api/jobs/stop", {}).then(refresh)}
+          />
+        </Track>
 
-      <Box
-        sx={{
-          border: 1,
-          borderColor: "divider",
-          borderRadius: "4px",
-          bgcolor: "background.paper",
-        }}
-      >
-        <Box sx={{ px: 2.5, pt: 2, pb: 1.5 }}>
-          <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2}>
-            <Typography variant="h6" sx={{ fontSize: 18 }}>
-              历史训练
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              runs/ 下按时间排列
-            </Typography>
-          </Stack>
-        </Box>
-        {options?.runs.length ? (
-          <Box sx={{ overflowX: "auto" }}>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>run</TableCell>
-                  <TableCell align="right">epoch</TableCell>
-                  <TableCell align="right">best val loss</TableCell>
-                  <TableCell align="right">best note score</TableCell>
-                  <TableCell align="right">checkpoints</TableCell>
-                  <TableCell align="right">操作</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {options.runs.map((run) => (
-                  <TableRow key={run.path} hover>
-                    <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{run.path}</TableCell>
-                    <TableCell align="right" sx={{ fontFamily: NUMERIC_FONT }}>
-                      {run.last_epoch ?? "-"}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontFamily: NUMERIC_FONT }}>
-                      {formatMetric(run.best_val_loss)}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontFamily: NUMERIC_FONT }}>
-                      {formatMetric(run.best_note_score)}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontFamily: NUMERIC_FONT }}>
-                      {run.checkpoint_count}
-                    </TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                        <Button size="small" startIcon={<Visibility />} onClick={() => void openDetail(run.path)}>
-                          详情
-                        </Button>
-                        {run.checkpoints[0] ? (
-                          <Button
-                            size="small"
-                            onClick={() =>
-                              navigate(`/infer?checkpoint=${encodeURIComponent(run.checkpoints[0])}`)
-                            }
-                          >
-                            用于推理
-                          </Button>
-                        ) : null}
-                      </Stack>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Box>
-        ) : (
-          <Box sx={{ px: 2.5, pb: 2.5 }}>
+        <Track
+          label="记录"
+          hint="runs/ 下按时间排列，可查看指标与 checkpoint"
+          accent={PALETTE.gold}
+        >
+          {options?.runs.length ? (
+            <Box sx={{ borderTop: 1, borderColor: "divider" }}>
+              <Box
+                sx={{
+                  display: { xs: "none", md: "grid" },
+                  gridTemplateColumns: "minmax(0, 1fr) 72px 108px 108px 90px auto",
+                  columnGap: 2,
+                  alignItems: "center",
+                  py: 0.75,
+                  borderBottom: 1,
+                  borderColor: "divider",
+                  color: "text.disabled",
+                }}
+              >
+                <Typography variant="caption">run</Typography>
+                <Typography variant="caption" sx={{ textAlign: "right" }}>
+                  epoch
+                </Typography>
+                <Typography variant="caption" sx={{ textAlign: "right" }}>
+                  val loss
+                </Typography>
+                <Typography variant="caption" sx={{ textAlign: "right" }}>
+                  note score
+                </Typography>
+                <Typography variant="caption" sx={{ textAlign: "right" }}>
+                  ckpt
+                </Typography>
+                <Typography variant="caption" sx={{ textAlign: "right" }}>
+                  操作
+                </Typography>
+              </Box>
+              {options.runs.map((run) => (
+                <Box
+                  key={run.path}
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "minmax(0, 1fr) auto", md: "minmax(0, 1fr) 72px 108px 108px 90px auto" },
+                    columnGap: 2,
+                    rowGap: 0.75,
+                    alignItems: "center",
+                    py: 1.1,
+                    borderBottom: 1,
+                    borderColor: "divider",
+                    "&:hover": { bgcolor: "action.hover" },
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    sx={{ fontVariantNumeric: "tabular-nums", wordBreak: "break-all" }}
+                  >
+                    {run.path}
+                  </Typography>
+                  {/* Numeric cells are hidden on xs; the row keeps its actions. */}
+                  {([
+                    ["epoch", run.last_epoch ?? "-"],
+                    ["val", formatMetric(run.best_val_loss)],
+                    ["note", formatMetric(run.best_note_score)],
+                    ["ckpt", run.checkpoint_count],
+                  ] as const).map(([key, value]) => (
+                    <Typography
+                      key={key}
+                      sx={{
+                        display: { xs: "none", md: "block" },
+                        textAlign: "right",
+                        fontFamily: NUMERIC_FONT,
+                        fontSize: 12.5,
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {value}
+                    </Typography>
+                  ))}
+                  <Stack
+                    direction="row"
+                    spacing={0.5}
+                    justifyContent="flex-end"
+                    sx={{ gridColumn: { xs: "1 / -1", md: "auto" } }}
+                  >
+                    <Button
+                      size="small"
+                      startIcon={<Visibility sx={{ fontSize: 16 }} />}
+                      onClick={() => void openDetail(run.path)}
+                    >
+                      详情
+                    </Button>
+                    {run.checkpoints[0] ? (
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          navigate(`/infer?checkpoint=${encodeURIComponent(run.checkpoints[0])}`)
+                        }
+                      >
+                        用于推理
+                      </Button>
+                    ) : null}
+                  </Stack>
+                </Box>
+              ))}
+            </Box>
+          ) : (
             <Box
               sx={{
                 border: 1,
                 borderStyle: "dashed",
                 borderColor: "divider",
-                borderRadius: "3px",
-                p: 3,
+                px: 3,
+                py: 4,
                 textAlign: "center",
               }}
             >
@@ -619,18 +644,23 @@ export default function TrainingPage() {
                 还没有训练记录。启动一次训练后会出现在这里。
               </Typography>
             </Box>
-          </Box>
-        )}
+          )}
+        </Track>
       </Box>
 
-      <Dialog open={Boolean(detail) || detailLoading} onClose={() => setDetail(null)} maxWidth="md" fullWidth>
-        <DialogTitle sx={{ fontFamily: "monospace", fontSize: 14 }}>
-          {detail?.path ?? "加载中..."}
+      <Dialog
+        open={Boolean(detail) || detailLoading}
+        onClose={() => setDetail(null)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontSize: 14, wordBreak: "break-all" }}>
+          {detail?.path ?? "加载中…"}
         </DialogTitle>
         <DialogContent dividers>
           {detailLoading ? (
             <Box sx={{ py: 5, textAlign: "center" }}>
-              <CircularProgress size={26} />
+              <CircularProgress size={24} />
             </Box>
           ) : detail ? (
             <Stack spacing={2}>
@@ -654,16 +684,23 @@ export default function TrainingPage() {
                 ) : null}
               </Stack>
               <Typography variant="subtitle2">文件</Typography>
-              <Table size="small">
-                <TableBody>
-                  {detail.files.map((file) => (
-                    <TableRow key={file.path}>
-                      <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{file.name}</TableCell>
-                      <TableCell align="right">{(file.size / 1024).toFixed(1)} KB</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <Box sx={{ borderTop: 1, borderColor: "divider" }}>
+                {detail.files.map((file) => (
+                  <Stack
+                    key={file.path}
+                    direction="row"
+                    justifyContent="space-between"
+                    sx={{ py: 0.6, borderBottom: 1, borderColor: "divider" }}
+                  >
+                    <Typography variant="caption" sx={{ wordBreak: "break-all" }}>
+                      {file.name}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ flex: "none", ml: 2 }}>
+                      {(file.size / 1024).toFixed(1)} KB
+                    </Typography>
+                  </Stack>
+                ))}
+              </Box>
               {detail.config ? (
                 <>
                   <Typography variant="subtitle2">config.json</Typography>
@@ -677,7 +714,6 @@ export default function TrainingPage() {
                       bgcolor: "rgba(0,0,0,0.32)",
                       border: 1,
                       borderColor: "divider",
-                      borderRadius: "3px",
                       fontSize: 12,
                     }}
                   >

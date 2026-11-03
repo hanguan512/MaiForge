@@ -3,16 +3,24 @@ import { api } from "./api";
 import type { JobSnapshot } from "./types";
 
 /** Poll the single active job; the backend exposes only one at a time. */
-export function useJob(pollMs = 1200) {
+export function useJob(pollMs = 1200, kinds?: string[]) {
   const [snapshot, setSnapshot] = useState<JobSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
+  const kindsRef = useRef(kinds);
+  kindsRef.current = kinds;
 
   const refresh = useCallback(async () => {
     try {
       const next = await api<JobSnapshot>("/api/jobs/current");
       if (alive.current) {
-        setSnapshot(next);
+        const job = next.job;
+        const allowed = kindsRef.current;
+        setSnapshot(
+          allowed && job && !allowed.includes(job.kind)
+            ? { ...next, job: null, log: [], metrics: [], result_maidata: undefined }
+            : next,
+        );
         setError(null);
       }
     } catch (caught) {

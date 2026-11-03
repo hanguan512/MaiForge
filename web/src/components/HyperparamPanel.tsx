@@ -80,51 +80,53 @@ export default function HyperparamPanel({
   onReset: () => void;
 }) {
   return (
-    <Box
-      sx={{
-        border: 1,
-        borderColor: "divider",
-        borderRadius: "4px",
-        bgcolor: "background.paper",
-        p: { xs: 2, md: 2.5 },
-      }}
-    >
+    <Box>
       <Stack
         direction={{ xs: "column", sm: "row" }}
-        alignItems={{ sm: "baseline" }}
+        alignItems={{ sm: "center" }}
         justifyContent="space-between"
         spacing={1}
+        sx={{ mb: 1 }}
       >
-        <Box>
-          <Typography variant="h6" sx={{ fontSize: 18 }}>
-            超参数
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            这些值会覆盖所选配置；留空表示沿用配置文件中的值。
-          </Typography>
-        </Box>
-        <Button size="small" startIcon={<RestartAlt />} onClick={onReset}>
+        <Typography variant="caption" color="text.secondary">
+          这些值会覆盖所选配置；留空表示沿用配置文件中的值。
+        </Typography>
+        <Button size="small" startIcon={<RestartAlt sx={{ fontSize: 16 }} />} onClick={onReset}>
           恢复配置值
         </Button>
       </Stack>
 
-      <Stack spacing={2.25} sx={{ mt: 2 }}>
-        {GROUPS.map((group) => (
-          <Box key={group.id}>
-            <Typography
-              variant="overline"
-              color="text.secondary"
-              sx={{ display: "block", mb: 0.75 }}
+      <Stack>
+        {GROUPS.map((group, index) => (
+          <Box
+            key={group.id}
+            sx={{
+              pt: index === 0 ? 0.5 : 2,
+              mt: index === 0 ? 0 : 2,
+              borderTop: index === 0 ? 0 : 1,
+              borderColor: "divider",
+            }}
+          >
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              alignItems={{ sm: "baseline" }}
+              spacing={{ xs: 0.25, sm: 1.5 }}
+              sx={{ mb: 1 }}
             >
-              {group.title}
-            </Typography>
+              <Typography sx={{ fontSize: 12.5, fontWeight: 700, letterSpacing: "0.04em" }}>
+                {group.title}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {group.hint}
+              </Typography>
+            </Stack>
             <Box
               sx={{
                 display: "grid",
                 gridTemplateColumns: {
                   xs: "1fr 1fr",
                   sm: "repeat(3, 1fr)",
-                  md: "repeat(6, 1fr)",
+                  lg: group.id === "data" ? "repeat(4, 1fr)" : "repeat(6, 1fr)",
                 },
                 gap: 1.25,
               }}
@@ -168,13 +170,6 @@ export default function HyperparamPanel({
                 label={<Typography variant="caption">AMP 混合精度（CUDA）</Typography>}
               />
             ) : null}
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mt: group.id === "train" ? 0 : 0.5 }}
-            >
-              {group.hint}
-            </Typography>
           </Box>
         ))}
       </Stack>
