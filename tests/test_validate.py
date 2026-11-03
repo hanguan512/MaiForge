@@ -130,6 +130,29 @@ class TestValidation(unittest.TestCase):
         )
         self.assertTrue(validate_chart(chart).ok, validate_chart(chart).errors)
 
+    def test_seconds_duration_uses_tempo_map(self):
+        # 2 seconds starting at 200 BPM would be 6400 ticks if the tempo never
+        # changed.  At tick 960 the BPM halves, so the hold really ends around
+        # tick 3680; a tap at 5000 must not be reported as inside the hold.
+        chart = Chart(
+            index=5,
+            level="12.0",
+            initial_bpm=200.0,
+            events=[
+                Event(
+                    tick=0,
+                    kind="hold",
+                    position="1",
+                    duration=Duration(seconds=2.0),
+                ),
+                Event(tick=5000, kind="tap", position="1"),
+            ],
+            bpm_changes=[BpmChange(0, 200.0), BpmChange(960, 100.0)],
+            end_tick=TICKS_PER_BAR * 4,
+        )
+        report = validate_chart(chart)
+        self.assertTrue(report.ok, report.errors)
+
     def test_firework_on_tap(self):
         chart = make_chart(
             [Event(tick=0, kind="tap", position="1", flags=["firework"])]
@@ -144,11 +167,13 @@ class TestValidation(unittest.TestCase):
         chart = make_chart([Event(tick=0, kind="tap", position="1")], bpm=-1)
         self.assertFalse(validate_chart(chart).ok)
 
-    def test_zero_duration(self):
+    def test_zero_duration_hold_is_legal(self):
+        # simai accepts ``[1:0]``; official charts use it for instant holds.
         chart = make_chart(
             [Event(tick=0, kind="hold", position="1", duration=Duration(ticks=0))]
         )
-        self.assertFalse(validate_chart(chart).ok)
+        report = validate_chart(chart)
+        self.assertTrue(report.ok, report.errors)
 
     def test_touch_hold_valid(self):
         chart = make_chart(

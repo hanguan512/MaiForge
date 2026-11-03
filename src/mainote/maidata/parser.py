@@ -657,6 +657,7 @@ def _parse_slide(token: str, tick: int) -> Event | None:
     chain_type = "single"
     saw_same_start = False
     saw_path = False
+    branch_index = 0
 
     first, pos, saw_star = _parse_slide_piece(token, pos)
     if first is None:
@@ -668,10 +669,16 @@ def _parse_slide(token: str, tick: int) -> Event | None:
     while pos < len(token):
         if saw_star:
             # The previous piece ended in '*' (same-start chain).  Parse the
-            # next segment directly; it starts from the same star tap.
+            # next branch directly; it starts from the same star tap.  The
+            # star can also terminate a connected path (e.g.
+            # ``8-2v3-5[4:1]*-5[4:1]``), so record the same-start semantics
+            # here instead of relying on the first piece.
+            saw_same_start = True
+            branch_index += 1
             segment, pos, saw_star = _parse_slide_piece(token, pos)
             if segment is None:
                 raise ParseError(f"invalid slide chain {token!r}")
+            segment.branch = branch_index
             segments.append(segment)
             continue
 
@@ -681,7 +688,12 @@ def _parse_slide(token: str, tick: int) -> Event | None:
             if pos >= len(token):
                 raise ParseError(f"slide chain ends with '*' in {token!r}")
             saw_same_start = True
-            saw_star = True
+            branch_index += 1
+            segment, pos, saw_star = _parse_slide_piece(token, pos)
+            if segment is None:
+                raise ParseError(f"invalid slide chain {token!r}")
+            segment.branch = branch_index
+            segments.append(segment)
             continue
 
         if _read_slide_shape(token, pos) is not None:
@@ -689,6 +701,7 @@ def _parse_slide(token: str, tick: int) -> Event | None:
             segment, pos, saw_star = _parse_slide_piece(token, pos)
             if segment is None:
                 raise ParseError(f"invalid path slide {token!r}")
+            segment.branch = branch_index
             segments.append(segment)
             continue
 
@@ -697,13 +710,20 @@ def _parse_slide(token: str, tick: int) -> Event | None:
     if saw_star:
         raise ParseError(f"slide chain ends with '*' in {token!r}")
     if saw_same_start and saw_path:
-        raise ParseError(f"mixed '*' and path slide syntax in {token!r}")
-    if saw_same_start:
+        # ``*`` branches where at least one branch is a connected path.  Each
+        # branch keeps its own final duration on the last segment.
+        chain_type = "mixed"
+    elif saw_same_start:
         chain_type = "same_start"
     elif saw_path:
         chain_type = "path"
 
     event_duration: Duration | None = None
+    if chain_type != "mixed":
+        # ``branch`` only matters for a mixed chain; keep old IR/chart
+        # signatures stable for same-start and path slides.
+        for segment in segments:
+            segment.branch = 0
     if chain_type == "path":
         # A connected path has one duration for the whole path.  Move the last
         # duration from the final segment to the event.

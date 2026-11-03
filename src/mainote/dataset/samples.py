@@ -22,6 +22,7 @@ from typing import Any, Iterable
 
 from ..maidata.model import Chart, Maidata
 from ..maidata.stats import DIFFICULTY_BY_INDEX, chart_stats
+from ..maidata.validate import validate_chart
 from .split import split_dataset
 
 
@@ -87,6 +88,7 @@ def export_samples(
     val: float = 0.1,
     test: float = 0.1,
     require_audio: bool = False,
+    songs: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     prepared = prepare_samples(
         processed_dir,
@@ -96,6 +98,7 @@ def export_samples(
         val=val,
         test=test,
         require_audio=require_audio,
+        songs=songs,
     )
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -107,8 +110,27 @@ def export_samples(
         row["sample"] = str(sample_path.resolve())
 
     manifest_path = out_dir / "manifest.jsonl"
+    rows = prepared.rows
+    if songs is not None:
+        # Filtered exports update only the selected songs and keep the rest of
+        # an existing manifest, so preparing song A then song B does not drop A.
+        wanted = {str(song_id) for song_id in songs}
+        kept: list[dict[str, Any]] = []
+        if manifest_path.is_file():
+            for line in manifest_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and str(row.get("song_id")) not in wanted:
+                    kept.append(row)
+        rows = kept + prepared.rows
+        rows.sort(key=lambda row: (str(row.get("song_id")), int(row.get("chart_index") or 0)))
     with manifest_path.open("w", encoding="utf-8") as fh:
-        for row in prepared.rows:
+        for row in rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     for row in prepared.rows:
@@ -147,9 +169,11 @@ def prepare_samples(
     val: float = 0.1,
     test: float = 0.1,
     require_audio: bool = False,
+    songs: Iterable[str] | None = None,
 ) -> PreparedSamples:
     processed_dir = Path(processed_dir)
-    songs = list(_iter_processed_songs(processed_dir))
+    entries = list(_iter_processed_songs(processed_dir))
+    wanted = {str(song_id) for song_id in songs} if songs is not None else None
     split_result, split_map = _resolve_splits(
         processed_dir,
         splits=splits,
@@ -157,7 +181,7 @@ def prepare_samples(
         train=train,
         val=val,
         test=test,
-        song_ids=[meta.get("song_id") or meta_path.parent.name for meta, _, meta_path in songs],
+        song_ids=[meta.get("song_id") or meta_path.parent.name for meta, _, meta_path in entries],
     )
 
     prepared = PreparedSamples(splits=split_result)
@@ -166,8 +190,10 @@ def prepare_samples(
     alignment_confidences: list[float] = []
     skipped_no_audio: list[str] = []
 
-    for meta, maidata, meta_path in songs:
+    for meta, maidata, meta_path in entries:
         song_id = str(meta.get("song_id") or meta_path.parent.name)
+        if wanted is not None and song_id not in wanted:
+            continue
         if require_audio and not meta.get("has_audio"):
             skipped_no_audio.append(song_id)
             continue
@@ -180,6 +206,14 @@ def prepare_samples(
         }
         timing = meta.get("timing") or {}
         audio_duration = timing.get("duration")
+        chart_error_markers = tuple(
+            f"inote_{chart.index}:" for chart in maidata.charts
+        )
+        song_errors = [
+            str(error)
+            for error in meta.get("errors", [])
+            if not any(marker in str(error) for marker in chart_error_markers)
+        ]
         for chart in sorted(maidata.charts, key=lambda c: c.index):
             stats = dict(stats_by_index.get(chart.index) or chart_stats(chart))
             alignment = stats.pop("alignment", None)
@@ -191,6 +225,16 @@ def prepare_samples(
             alignment_confidence = (
                 alignment.get("confidence") if isinstance(alignment, dict) else None
             )
+            # ``meta.errors`` is song-level: ``validate_maidata`` prefixes each
+            # chart error with ``inote_N:`` but stores every chart's errors in
+            # the same list. Recompute this chart's report and keep only
+            # non-chart (song-level) errors so one broken difficulty does not
+            # invalidate the song's other charts.
+            chart_errors = [
+                f"inote_{chart.index}: {error}"
+                for error in validate_chart(chart).errors
+            ]
+            errors = song_errors + chart_errors
             row = {
                 "sample_id": sample_id,
                 "song_id": song_id,
@@ -213,10 +257,10 @@ def prepare_samples(
                 "stats": stats,
                 "alignment": alignment,
                 "alignment_confidence": alignment_confidence,
-                "valid": not bool(meta.get("errors")),
+                "valid": not errors,
                 "split": split_map.get(song_id, "unsplit"),
                 "warnings": list(meta.get("warnings", [])) + list(chart.warnings),
-                "errors": list(meta.get("errors", [])),
+                "errors": errors,
             }
             prepared.rows.append(row)
             prepared.charts[sample_id] = chart
@@ -225,7 +269,7 @@ def prepare_samples(
 
     prepared.rows.sort(key=lambda r: (r["song_id"], r["chart_index"]))
     split_song_counts = {
-        name: len(split_result.get("splits", {}).get(name, []))
+        name: sum(1 for song_id in prepared.songs if split_map.get(song_id) == name)
         for name in ("train", "val", "test")
     }
     prepared.summary = {

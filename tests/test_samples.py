@@ -103,6 +103,63 @@ class TestSampleExport(unittest.TestCase):
                 self.assertIn("song_metadata", sample)
                 self.assertGreater(sample["stats"]["notes_total"], 0)
 
+    def test_export_filters_selected_songs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            processed = self._make_processed(root, songs=4)
+            out = root / "samples"
+            summary = export_samples(
+                processed, out, seed=0, songs=["song_01", "song_03"]
+            )
+            self.assertEqual(summary["song_count"], 2)
+            self.assertEqual(summary["chart_count"], 4)
+            self.assertEqual(
+                sum(summary["split_song_counts"].values()), 2
+            )
+            # Preparing another selection merges into the existing manifest.
+            export_samples(processed, out, seed=0, songs=["song_00"])
+            lines = [
+                json.loads(line)
+                for line in (out / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(
+                {row["song_id"] for row in lines},
+                {"song_00", "song_01", "song_03"},
+            )
+            self.assertTrue((out / "song_01" / "inote_5.json").exists())
+            self.assertFalse((out / "song_02").exists())
+
+    def test_invalid_chart_does_not_invalidate_siblings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw"
+            song = raw / "mixed"
+            song.mkdir(parents=True)
+            (song / "maidata.txt").write_text(
+                TWO_CHART_MAIDATA.format(title="mixed").replace(
+                    "&inote_5=(120){4}1,2,3,4,5,6,7,8,E",
+                    "&inote_5=(120){4}5-5[4:1],E",
+                ),
+                encoding="utf-8",
+            )
+            processed = root / "processed"
+            ingest_dataset(raw, processed)
+
+            meta = json.loads((processed / "mixed" / "meta.json").read_text())
+            self.assertTrue(meta["errors"])  # ingest still reports the song error
+            rows = build_manifest(processed, seed=0)["rows"]
+            by_index = {row["chart_index"]: row for row in rows}
+            self.assertTrue(by_index[2]["valid"])
+            self.assertEqual(by_index[2]["errors"], [])
+            self.assertFalse(by_index[5]["valid"])
+            self.assertTrue(
+                any("straight slide" in error for error in by_index[5]["errors"])
+            )
+            self.assertTrue(
+                all("inote_5:" in error for error in by_index[5]["errors"])
+            )
+
     def test_require_audio_filters_chart_only_songs(self):
         with tempfile.TemporaryDirectory() as tmp:
             processed = self._make_processed(Path(tmp), songs=3)

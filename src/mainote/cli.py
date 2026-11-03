@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
@@ -140,6 +141,40 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_samples.set_defaults(func=_cmd_dataset_samples)
 
+    p_fetch = dsub.add_parser(
+        "fetch-wmc",
+        help="search and download charts from AWMC-MaiArchive (download.wmc.pub)",
+    )
+    p_fetch.add_argument("-q", "--query", default="", help="title / artist / alias / id")
+    p_fetch.add_argument(
+        "--id",
+        dest="ids",
+        action="append",
+        default=None,
+        help="download a specific chart id (repeatable)",
+    )
+    p_fetch.add_argument("--version", default=None, help="version id or name filter")
+    p_fetch.add_argument("--type", dest="chart_type", choices=["st", "dx", "utg"])
+    p_fetch.add_argument("--genre", default=None)
+    p_fetch.add_argument(
+        "--sort", choices=["id", "title", "version", "popular"], default="id"
+    )
+    p_fetch.add_argument("--limit", type=int, default=20, help="max songs (1-500)")
+    p_fetch.add_argument("--page", type=int, default=1)
+    p_fetch.add_argument("--raw", default="data/raw", help="raw dataset root")
+    p_fetch.add_argument("--out", default="data/processed", help="processed root")
+    p_fetch.add_argument(
+        "--cache", default="out/wmc-cache", help="downloaded zip cache directory"
+    )
+    p_fetch.add_argument("--align", action="store_true", help="run audio alignment")
+    p_fetch.add_argument(
+        "--include-video", action="store_true", help="download background video too"
+    )
+    p_fetch.add_argument("--delay", type=float, default=1.0, help="seconds between songs")
+    p_fetch.add_argument("--force", action="store_true", help="re-download existing songs")
+    p_fetch.add_argument("--dry-run", action="store_true", help="only print matches")
+    p_fetch.set_defaults(func=_cmd_dataset_fetch_wmc)
+
     p_ml = sub.add_parser("ml", help="P3 neural model feature prep, training, inference")
     mlsub = p_ml.add_subparsers(dest="ml_command", required=True)
 
@@ -152,7 +187,25 @@ def main(argv: list[str] | None = None) -> int:
     p_features.add_argument("--hop", type=int, default=256)
     p_features.add_argument("--overwrite", action="store_true")
     p_features.add_argument("--limit", type=int, default=None)
+    p_features.add_argument(
+        "--songs", default=None, help="comma-separated song ids to extract"
+    )
     p_features.set_defaults(func=_cmd_ml_prepare)
+
+    p_prepare_data = mlsub.add_parser(
+        "prepare-data",
+        help="export training samples and precompute features in one step",
+    )
+    p_prepare_data.add_argument("processed_dir")
+    p_prepare_data.add_argument("--samples-out", default="data/samples")
+    p_prepare_data.add_argument("--features-out", default="data/features")
+    p_prepare_data.add_argument(
+        "--songs", default=None, help="comma-separated song ids (samples and features)"
+    )
+    p_prepare_data.add_argument("--seed", type=int, default=0)
+    p_prepare_data.add_argument("--require-audio", action="store_true")
+    p_prepare_data.add_argument("--overwrite-features", action="store_true")
+    p_prepare_data.set_defaults(func=_cmd_ml_prepare_data)
 
     p_train = mlsub.add_parser("train", help="train the P3 event model")
     p_train.add_argument("--config", default="configs/p3_base.yaml")
@@ -188,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
     p_infer.add_argument("--title", default=None)
     p_infer.add_argument("--artist", default=None)
     p_infer.set_defaults(func=_cmd_ml_infer)
+
+    p_web = sub.add_parser("web", help="launch the local web UI (browse/infer/train)")
+    p_web.add_argument("--host", default="127.0.0.1")
+    p_web.add_argument("--port", type=int, default=8765)
+    p_web.add_argument("--no-browser", action="store_true")
+    p_web.set_defaults(func=_cmd_web)
 
     p_demo = sub.add_parser("demo", help="run synthetic click-track demo")
     p_demo.add_argument("--out", default="out/demo")
@@ -566,6 +625,108 @@ def _cmd_dataset_samples(args) -> int:
     return 0
 
 
+def _cmd_dataset_fetch_wmc(args) -> int:
+    from .dataset.wmc import WmcClient
+    from .dataset.zipimport import import_zip_archive
+
+    client = WmcClient()
+    if args.ids:
+        charts = [client.chart(shortid) for shortid in args.ids]
+    else:
+        if not args.query.strip():
+            raise ValueError("请用 --query 或 --id 指定要下载的曲目")
+        payload = client.search(
+            args.query,
+            version=args.version,
+            chart_type=args.chart_type,
+            genre=args.genre,
+            sort=args.sort,
+            page=args.page,
+            limit=args.limit,
+        )
+        charts = payload["charts"]
+        matched = payload.get("matched", len(charts))
+        print(
+            f"AWMC-MaiArchive: 匹配 {matched} 首，下载前 {len(charts)} 首"
+            f"(第 {payload.get('page', args.page)}/{payload.get('pages', 1)} 页)"
+        )
+    if not charts:
+        print("没有匹配的曲目。")
+        return 0
+
+    for chart in charts:
+        levels = chart.get("levels") or {}
+        level_text = " ".join(
+            f"{name}:{levels[key].get('raw', '?')}"
+            for key, name in (("2", "BAS"), ("3", "ADV"), ("4", "EXP"), ("5", "MAS"))
+            if key in levels
+        )
+        print(
+            f"  {chart.get('shortid')}  {chart.get('title')}  "
+            f"[{chart.get('type')}/{chart.get('version')}]  "
+            f"BPM {chart.get('bpm')}  {level_text}"
+        )
+    if args.dry_run:
+        return 0
+
+    raw_root = Path(args.raw)
+    processed_root = Path(args.out)
+    cache = Path(args.cache)
+    staging = cache / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    raw_root.mkdir(parents=True, exist_ok=True)
+    processed_root.mkdir(parents=True, exist_ok=True)
+
+    failures = 0
+    for position, chart in enumerate(charts):
+        shortid = str(chart.get("shortid") or "")
+        song_id = f"wmc_{shortid}"
+        if not args.force and (
+            (raw_root / song_id).is_dir() or (processed_root / song_id).is_dir()
+        ):
+            print(f"[{shortid}] 已存在，跳过（--force 可重新下载）")
+        else:
+            suffix = "_video" if args.include_video else ""
+            zip_path = cache / f"{song_id}{suffix}.zip"
+            if not (zip_path.is_file() and _zip_ok(zip_path)):
+                print(f"[{shortid}] 下载 {chart.get('title')} …")
+                client.download_zip(
+                    chart, zip_path, include_video=args.include_video
+                )
+            result = import_zip_archive(
+                zip_path,
+                raw_root=raw_root,
+                processed_root=processed_root,
+                filename=f"{song_id}.zip",
+                align=args.align,
+                staging_root=staging,
+            )
+            if result["ok"]:
+                print(
+                    f"[{shortid}] 入库 {result['song_id']}："
+                    f"{result['title']} / {result['chart_count']} 个难度"
+                )
+                for warning in result["warnings"]:
+                    print(f"  warning: {warning}")
+            else:
+                failures += 1
+                print(f"[{shortid}] 失败: {'; '.join(result['errors'])}")
+        if position + 1 < len(charts) and args.delay > 0:
+            time.sleep(args.delay)
+    print(f"完成：成功/跳过 {len(charts) - failures}/{len(charts)}")
+    return 1 if failures else 0
+
+
+def _zip_ok(path: Path) -> bool:
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return archive.testzip() is None
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
 def _per_chart_rows(processed_dir: Path) -> list[dict]:
     rows = []
     for meta_path in sorted(processed_dir.glob("*/meta.json")):
@@ -598,6 +759,11 @@ def _per_chart_rows(processed_dir: Path) -> list[dict]:
 def _cmd_ml_prepare(args) -> int:
     from .ml.prepare import prepare_features
 
+    songs = None
+    if args.songs:
+        songs = [item.strip() for item in args.songs.split(",") if item.strip()]
+        if not songs:
+            raise ValueError("--songs 至少要包含一个歌曲 id")
     summary = prepare_features(
         args.processed_dir,
         args.out,
@@ -607,6 +773,7 @@ def _cmd_ml_prepare(args) -> int:
         hop=args.hop,
         overwrite=args.overwrite,
         limit=args.limit,
+        songs=songs,
         log=print,
     )
     print(
@@ -622,6 +789,61 @@ def _cmd_ml_prepare(args) -> int:
         )
     )
     return 0 if not summary["errors"] else 1
+
+
+def _cmd_ml_prepare_data(args) -> int:
+    from .dataset.samples import export_samples
+    from .ml.prepare import prepare_features
+
+    songs = None
+    if args.songs:
+        songs = [item.strip() for item in args.songs.split(",") if item.strip()]
+        if not songs:
+            raise ValueError("--songs 至少要包含一个歌曲 id")
+
+    print("== export samples ==", flush=True)
+    sample_summary = export_samples(
+        args.processed_dir,
+        args.samples_out,
+        seed=args.seed,
+        require_audio=args.require_audio,
+        songs=songs,
+    )
+    print(
+        json.dumps(
+            {
+                "samples_out": args.samples_out,
+                "rows": sample_summary.get("chart_count"),
+                "split_songs": sample_summary.get("split_song_counts"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
+
+    print("== extract features ==", flush=True)
+    feature_summary = prepare_features(
+        args.processed_dir,
+        args.features_out,
+        overwrite=args.overwrite_features,
+        songs=songs,
+        log=print,
+    )
+    print(
+        json.dumps(
+            {
+                "written": feature_summary["written"],
+                "skipped": feature_summary["skipped"],
+                "errors": feature_summary["errors"],
+                "out_dir": feature_summary["out_dir"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
+    return 0 if not feature_summary["errors"] else 1
 
 
 def _cmd_ml_train(args) -> int:
@@ -656,6 +878,26 @@ def _cmd_ml_infer(args) -> int:
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
+
+
+def _cmd_web(args) -> int:
+    try:
+        from .webapp.app import main as web_main
+    except ImportError:  # pragma: no cover - optional dependency
+        print(
+            "FastAPI is required for the web UI. "
+            "Install it with: pip install -e '.[web]'",
+            file=sys.stderr,
+        )
+        return 1
+    return int(
+        web_main(
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+        )
+        or 0
+    )
 
 
 def _cmd_demo(args) -> int:

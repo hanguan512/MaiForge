@@ -72,6 +72,20 @@ data/raw/<song_id>/
   meta.json          # 可选：{"title": "...", "artist": "..."}
 ```
 
+也可以直接从 AWMC-MaiArchive（`download.wmc.pub`）批量获取谱面和音频：
+
+```bash
+# 先 dry-run 看匹配结果；正式下载默认跳过已存在的 wmc_<shortid>
+python -m mainote dataset fetch-wmc -q "Project SEKAI" --limit 50 --dry-run
+python -m mainote dataset fetch-wmc -q "Project SEKAI" --limit 50 --align
+
+# 已知 shortid 时精确下载；--include-video 会显著增大体积
+python -m mainote dataset fetch-wmc --id 011661
+```
+
+每首歌以 `wmc_<shortid>` 入库；zip 缓存在 `out/wmc-cache/`，可用 `--delay` 控制请求间隔。
+Web UI 数据集页提供同样的在线检索、多选和后台导入进度。
+
 完整流水线：
 
 ```bash
@@ -91,6 +105,15 @@ python -m mainote dataset samples data/processed \
 
 # 5. 预计算 log-mel 特征（每首歌一个文件）
 python -m mainote ml prepare-features data/processed --out data/features
+
+# 只处理选中的歌曲
+python -m mainote ml prepare-features data/processed --out data/features \
+  --songs song_a,song_b
+
+# 或者一步导出所选歌曲的样本 + 特征
+python -m mainote ml prepare-data data/processed \
+  --samples-out data/samples --features-out data/features \
+  --songs song_a,song_b --require-audio
 ```
 
 预期输出：
@@ -100,6 +123,10 @@ data/samples/manifest.jsonl       # 每行一个 (song_id, inote_N)
 data/samples/<song_id>/inote_N.json
 data/features/<song_id>.npz       # mel, fps, sr, n_mels, duration
 ```
+
+`manifest.jsonl` 的 `valid` 按谱面判定：`meta.json` 会汇总一首歌所有难度的校验错误，
+但导出样本时会逐难度重新校验，只保留该难度自己的错误。一张坏谱不会让同歌的其他
+难度失去训练资格；训练也只使用 `valid` 的行。
 
 训练前检查：
 
@@ -295,3 +322,39 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 - [ ] 跨窗口长音符截断率和重复率已经统计并在可接受范围。
 
 任何一项不满足，就继续把 `mainote generate`（规则 baseline）作为默认生成器。
+
+## 12. 本地 Web UI（可选）
+
+不想记 CLI 参数时，可以用本地 Web UI 管理数据浏览、推理和训练：
+
+```bash
+pip install -e '.[audio,train,web]'
+mainote web --no-browser --port 8765
+```
+
+- **浏览：** 自动扫描 `data/processed`、`out/demo/processed`、`out/audio-fm/dataset/processed`；
+  其他位置用 `MAINOTE_WEB_DATA_ROOTS=/path/a:/path/b` 指定。
+- **数据集管理：** 从 AWMC-MaiArchive 在线检索、多选下载并后台入库；也可以批量上传
+  zip，一个压缩包视为一首歌，包内需要音频（优先 `track.*`）和 `maidata` 文件。
+  解压后写入 `data/raw/<song_id>/`，再通过 `dataset ingest` 生成
+  `data/processed/<song_id>/{meta.json,maidata.ir.json}`。
+  可选 "分析 BPM / 对齐" 会对每首歌运行音频分析（更慢）。
+  已入库列表会显示样本与 log-mel 特征状态；“补全样本与特征”会为所有缺失歌曲
+  调用 `ml prepare-data`，也可以点单行的补全图标只处理一首。
+- **预览：** 内嵌官方 MajdataView WebGL 构建，自动载入谱面、MP3 与背景图；
+  流速和偏移在 MajdataView 自带设置中调整。
+- **推理：** 选择 checkpoint/音频/难度/采样参数，等价于
+  `mainote ml infer ...`；完成后可直接跳转到预览器。
+- **训练：** 训练页可以直接从数据目录勾选歌曲，按歌曲重新划分 train/val（同一首歌
+  不会跨集），并用“准备所选数据”调用 `ml prepare-data` 仅导出所选歌曲的样本与
+  log-mel 特征。页面还提供超参数覆盖（优化器、数据窗口、模型宽度/层数）、实时
+  网络层级图，以及 `dry run`/`max_steps` 快速验证。启动时会生成
+  `runs/<run>/training_manifest.jsonl` 和 `runs/<run>/train_config.yaml`，不修改
+  `configs/` 下的原文件。若只选一首歌，没有验证集，后端会自动关闭 note-level 评估
+  并改用 `val_loss` 选择 checkpoint。
+  任务面板会 tail 日志并绘制 `metrics.jsonl` 曲线；历史 run 可查看 checkpoint、
+  `config.json` 和指标。
+
+后端只允许启动 `mainote ml train|infer` 和 `ml prepare-data`，同一时间一个任务，
+且所有路径必须位于仓库、`runs/` 或 `out/` 内。Web 界面本身不替代 GPU 服务器：训练仍应在有
+NVIDIA GPU 的机器上运行。前端开发模式见 `README.md`。

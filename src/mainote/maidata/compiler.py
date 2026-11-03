@@ -244,6 +244,21 @@ def _format_slide(event: Event) -> str:
         s += _flag_suffix(track_flags)
         return s
 
+    if event.chain_type == "mixed":
+        # Each '*' branch keeps its own final duration; a branch may itself be
+        # a connected path, so only emit '*' when the branch index changes.
+        previous_branch: int | None = None
+        for segment in event.slide:
+            if previous_branch is not None and segment.branch != previous_branch:
+                s += "*"
+            previous_branch = segment.branch
+            s += _format_slide_shape(segment)
+            s += _format_duration(segment.duration)
+            s += _flag_suffix(set(segment.flags))
+        if event.duration is not None:
+            s += _format_duration(event.duration)
+        return s
+
     for i, segment in enumerate(event.slide):
         if i > 0:
             s += "*"

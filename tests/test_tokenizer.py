@@ -49,6 +49,28 @@ class TestTokenizer(unittest.TestCase):
         self.assertIn("S_C", tokens)
         self.assertIn("S_D6", tokens)
 
+    def test_mixed_chain_roundtrip(self):
+        chart = parse_maidata_text(
+            "&wholebpm=120\n&inote_5=(120){4}8>2[4:1]*s4<5[4:1],6h[1:0],E"
+        ).chart(5)
+        tokenizer = EventTokenizer()
+        tokens = tokenizer.tokenize_chart(chart)
+        self.assertIn("CHAIN_MIXED", tokens)
+        self.assertIn("BRANCH", tokens)
+        parsed = tokenizer.detokenize(tokens)
+        self.assertEqual(
+            [e.signature() for e in chart.events],
+            [e.signature() for e in parsed.events],
+        )
+        self.assertEqual(
+            [s.branch for s in parsed.events[0].slide],
+            [0, 1, 1],
+        )
+        grammar = ChartTokenGrammar(ChartVocabulary.default(), strict=True)
+        for token in tokens:
+            grammar.feed(token)
+        self.assertTrue(grammar.parsed.events[0].slide[1].branch == 1)
+
     def test_window_relative_time(self):
         chart = parse_file(SAMPLE).chart(5)
         tokenizer = EventTokenizer()

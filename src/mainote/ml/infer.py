@@ -399,10 +399,17 @@ def _repair_events(events: list[Event]) -> tuple[list[Event], list[str]]:
                 warnings.append(f"dropped empty slide at tick {event.tick}")
                 continue
             previous_end = event.position
-            for segment in event.slide:
+            for index, segment in enumerate(event.slide):
                 segment_start = (
                     event.position
                     if event.chain_type == "same_start"
+                    or (
+                        event.chain_type == "mixed"
+                        and (
+                            index == 0
+                            or segment.branch != event.slide[index - 1].branch
+                        )
+                    )
                     else previous_end
                 )
                 if segment.shape == "-" and segment.end == segment_start:

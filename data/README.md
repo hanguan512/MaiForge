@@ -11,6 +11,28 @@ data/raw/
     meta.json            # optional: {"title": "...", "artist": "..."}
 ```
 
+The web UI (`mainote web` → 数据集) can import the same layout from zip files:
+each zip is one song and must contain an audio file (preferably `track.*`) plus
+`maidata`. Uploads are copied to `data/raw/<song_id>/` and ingested into
+`data/processed/` automatically; batch uploads and duplicate-name handling are
+built in.
+
+You can also download charts directly from AWMC-MaiArchive
+(`download.wmc.pub`) instead of preparing zips by hand:
+
+```bash
+# Search the public catalogue; --dry-run only prints matches
+PYTHONPATH=src .venv/bin/python -m mainote dataset fetch-wmc \
+  -q Apollo --limit 20 --dry-run
+PYTHONPATH=src .venv/bin/python -m mainote dataset fetch-wmc \
+  -q Apollo --limit 20 --align
+```
+
+Each chart becomes `data/raw/wmc_<shortid>/` + `data/processed/wmc_<shortid>/`;
+zip downloads are cached in `out/wmc-cache/` and background video is excluded
+unless you pass `--include-video`. The web UI exposes the same search and
+background import.
+
 Ingest:
 
 ```bash

@@ -64,5 +64,42 @@ class TestMelFeatures(unittest.TestCase):
                 self.assertTrue(np.isfinite(data["mel"]).all())
 
 
+    def test_prepare_features_filters_songs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_path = root / "song.wav"
+            sr = 22050
+            t = np.arange(sr, dtype=np.float32) / sr
+            samples = np.sin(2 * np.pi * 440.0 * t).astype(np.float32) * 0.5
+            write_wav(audio_path, samples, sr)
+            processed = root / "processed"
+            for song_id in ("keep", "skip"):
+                song = processed / song_id
+                song.mkdir(parents=True)
+                (song / "meta.json").write_text(
+                    json.dumps(
+                        {
+                            "song_id": song_id,
+                            "audio": str(audio_path),
+                            "has_audio": True,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            out = root / "features"
+            summary = prepare_features(
+                processed,
+                out,
+                n_mels=40,
+                n_fft=512,
+                hop=256,
+                songs=["keep"],
+            )
+            self.assertEqual(summary["written"], 1)
+            self.assertEqual(summary["songs"], ["keep"])
+            self.assertTrue((out / "keep.npz").exists())
+            self.assertFalse((out / "skip.npz").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

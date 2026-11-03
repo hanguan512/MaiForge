@@ -76,11 +76,15 @@ def chart_stats(chart: Chart) -> dict[str, Any]:
     # ADX counts each additional same-start (`*`) slide segment as a note, but
     # counts a connected path slide (e.g. 4-1>2-7) as one note.  The wiki count
     # also adds each slide's star tap.
-    same_start_extra = sum(
-        len(e.slide) - 1
-        for e in chart.events
-        if e.kind == "slide" and e.chain_type == "same_start"
-    )
+    same_start_extra = 0
+    for event in chart.events:
+        if event.kind != "slide":
+            continue
+        if event.chain_type == "same_start":
+            same_start_extra += len(event.slide) - 1
+        elif event.chain_type == "mixed":
+            # Each '*' branch is one slide note, even if the branch is a path.
+            same_start_extra += len({s.branch for s in event.slide}) - 1
     note_times = sorted(chart.event_time_seconds(e) for e in chart.events)
     end_times = sorted(chart.event_end_seconds(e) for e in chart.events)
 

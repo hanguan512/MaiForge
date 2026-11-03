@@ -112,6 +112,33 @@ class TestTokenSyntax(unittest.TestCase):
         self.assertEqual(event.duration.ticks, 1680)
         self.assertIsNone(event.slide[-1].duration)
 
+    def test_mixed_same_start_and_path_chain(self):
+        chart = parse_body("{4}8>2[4:1]*s4<5[4:1],E")
+        event = chart.events[0]
+        self.assertEqual(event.chain_type, "mixed")
+        self.assertIsNone(event.duration)
+        self.assertEqual([s.end for s in event.slide], ["2", "4", "5"])
+        self.assertEqual([s.branch for s in event.slide], [0, 1, 1])
+        # Each branch keeps its own terminal duration.
+        self.assertEqual(event.slide[0].duration.ticks, 960)
+        self.assertIsNone(event.slide[1].duration)
+        self.assertEqual(event.slide[2].duration.ticks, 960)
+
+    def test_path_then_same_start_branch(self):
+        # The '*' terminates a connected path; the following ``-5`` is a new
+        # branch from the original star point 8, not a continuation 5->5.
+        chart = parse_body("{4}8-2v3-5[4:1]*-5[4:1],E")
+        event = chart.events[0]
+        self.assertEqual(event.chain_type, "mixed")
+        self.assertEqual([s.end for s in event.slide], ["2", "3", "5", "5"])
+        self.assertEqual([s.branch for s in event.slide], [0, 0, 0, 1])
+        self.assertEqual(event.slide[-1].duration.ticks, 960)
+
+    def test_zero_duration(self):
+        chart = parse_body("{4}6h[1:0],E")
+        self.assertEqual(chart.events[0].duration.ticks, 0)
+        self.assertEqual(chart.events[0].end_tick(), 0)
+
     def test_absolute_durations(self):
         chart = parse_body("{4}1h[#1.5],2h[160#2],3h[3##1.5],E")
         self.assertEqual(chart.events[0].duration.seconds, 1.5)

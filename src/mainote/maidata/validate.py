@@ -19,7 +19,6 @@ from .model import (
     Event,
     Maidata,
     position_distance,
-    TICKS_PER_BEAT,
 )
 
 
@@ -109,14 +108,17 @@ def validate_chart(chart: Chart) -> ValidationReport:
         for event in chart.events:
             if event.kind != kind or event.duration is None:
                 continue
-            bpm = chart.bpm_at(event.tick)
-            ticks = event.duration.approx_ticks(bpm)
+            ticks = _duration_ticks(chart, event)
             if ticks is None:
                 continue
-            if ticks <= 0:
+            if ticks < 0:
                 report.errors.append(
-                    f"tick {event.tick}: {kind} on {event.position!r} has non-positive duration"
+                    f"tick {event.tick}: {kind} on {event.position!r} has negative duration"
                 )
+                continue
+            if ticks == 0:
+                # ``[1:0]`` is legal in simai and behaves like a zero-length
+                # hold; it occupies no interval for overlap checking.
                 continue
             intervals.append((event.tick, event.tick + ticks, event.position))
         intervals.sort()
@@ -153,6 +155,22 @@ def validate_chart(chart: Chart) -> ValidationReport:
             f"end_tick {chart.end_tick} is before the last event tick {chart.max_tick}"
         )
     return report
+
+
+def _duration_ticks(chart: Chart, event: Event) -> int | None:
+    """Duration in ticks, honouring BPM changes for ``[#seconds]`` values."""
+    duration = event.duration
+    if duration is None:
+        return None
+    if duration.ticks is not None:
+        return int(duration.ticks)
+    if duration.seconds is not None:
+        # A ``#`` duration is wall-clock time, so integrate the tempo map
+        # instead of assuming the BPM at the start tick lasts for the whole
+        # hold.  Official charts routinely change BPM under long holds.
+        start = chart.seconds_at_tick(event.tick)
+        return chart.ticks_at_seconds(start + duration.seconds) - event.tick
+    return None
 
 
 def _validate_event(event: Event, report: ValidationReport) -> None:
@@ -192,7 +210,7 @@ def _validate_event(event: Event, report: ValidationReport) -> None:
     if event.kind == "slide":
         if not event.slide:
             report.errors.append(f"tick {event.tick}: slide has no segments")
-        if event.chain_type not in ("single", "same_start", "path"):
+        if event.chain_type not in ("single", "same_start", "path", "mixed"):
             report.errors.append(
                 f"tick {event.tick}: invalid slide chain_type {event.chain_type!r}"
             )
@@ -205,9 +223,13 @@ def _validate_event(event: Event, report: ValidationReport) -> None:
             )
         previous_end = event.position
         for i, segment in enumerate(event.slide):
+            branch_start = (
+                i == 0 or segment.branch != event.slide[i - 1].branch
+            )
             segment_start = (
                 event.position
                 if event.chain_type == "same_start"
+                or (event.chain_type == "mixed" and branch_start)
                 else previous_end
             )
             if segment.shape not in SLIDE_SHAPES:
@@ -249,7 +271,18 @@ def _validate_event(event: Event, report: ValidationReport) -> None:
                         f"{segment_start}->{segment.end} should end on the "
                         "opposite button"
                     )
-            if event.chain_type != "path":
+            if event.chain_type == "mixed":
+                branch_end = (
+                    i == len(event.slide) - 1
+                    or event.slide[i + 1].branch != segment.branch
+                )
+                _validate_duration(
+                    segment.duration,
+                    report,
+                    f"tick {event.tick} slide segment {i}",
+                    required=branch_end,
+                )
+            elif event.chain_type != "path":
                 _validate_duration(
                     segment.duration,
                     report,
@@ -314,10 +347,10 @@ def _validate_duration(
         return
     if duration.bare:
         return
-    if duration.ticks is not None and duration.ticks <= 0:
-        report.errors.append(f"{label}: duration ticks must be positive")
-    if duration.seconds is not None and duration.seconds <= 0:
-        report.errors.append(f"{label}: duration seconds must be positive")
+    if duration.ticks is not None and duration.ticks < 0:
+        report.errors.append(f"{label}: duration ticks must be non-negative")
+    if duration.seconds is not None and duration.seconds < 0:
+        report.errors.append(f"{label}: duration seconds must be non-negative")
     if duration.ticks is None and duration.seconds is None:
         report.errors.append(f"{label}: duration has no ticks or seconds")
     if duration.wait_seconds is not None and duration.wait_seconds < 0:

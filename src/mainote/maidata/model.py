@@ -135,6 +135,10 @@ class SlideSegment:
     via: str | None = None
     duration: Duration | None = None
     flags: list[str] = field(default_factory=list)
+    # Same-start branch index.  Always 0 except in a ``mixed`` chain, where a
+    # single star branches into several slides and at least one branch is a
+    # connected path (e.g. ``2<2[4:17]*<2>2[2:17]``).
+    branch: int = 0
     raw: str = ""
 
     def signature(self) -> dict[str, Any]:
@@ -144,6 +148,7 @@ class SlideSegment:
             "via": self.via,
             "duration": self.duration.signature() if self.duration else None,
             "flags": _sorted_flags(self.flags),
+            "branch": self.branch,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -157,6 +162,7 @@ class SlideSegment:
             via=data.get("via"),
             duration=Duration.from_dict(data.get("duration")),
             flags=list(data.get("flags", [])),
+            branch=int(data.get("branch", 0)),
             raw=data.get("raw", ""),
         )
 
@@ -170,7 +176,8 @@ class Event:
     duration: Duration | None = None
     slide: list[SlideSegment] = field(default_factory=list)
     # "single": one segment; "same_start": simai `*` chain; "path": connected
-    # multi-joint slide such as ``4-1>2-7[16:7]``.
+    # multi-joint slide such as ``4-1>2-7[16:7]``; "mixed": several `*` branches
+    # where at least one branch is itself a connected path.
     chain_type: str = "single"
     raw: str = ""
 
@@ -207,6 +214,18 @@ class Event:
     def sort_key(self) -> tuple:
         return (self.tick, self.kind, self.position, self.raw)
 
+    def _slide_durations(self) -> list[Duration]:
+        """Per-branch movement durations for a slide event."""
+        if self.chain_type == "path" and self.duration is not None:
+            return [self.duration]
+        if self.chain_type == "mixed":
+            branches: dict[int, Duration] = {}
+            for segment in self.slide:
+                if segment.duration is not None:
+                    branches[segment.branch] = segment.duration
+            return list(branches.values())
+        return [s.duration for s in self.slide if s.duration is not None]
+
     def end_tick(self) -> int:
         """Approximate end tick for stats/validation.
 
@@ -217,15 +236,12 @@ class Event:
             d = self.duration.ticks
             return self.tick + (d if d is not None else 0)
         if self.kind == "slide":
-            if self.chain_type == "path" and self.duration is not None:
-                movement = self.duration.ticks
-            else:
-                durations = [
-                    s.duration.ticks
-                    for s in self.slide
-                    if s.duration is not None and s.duration.ticks is not None
-                ]
-                movement = max(durations) if durations else 0
+            durations = [
+                d.ticks
+                for d in self._slide_durations()
+                if d.ticks is not None
+            ]
+            movement = max(durations) if durations else 0
             return self.tick + TICKS_PER_BEAT + (movement or 0)
         return self.tick
 
@@ -233,16 +249,12 @@ class Event:
         if self.kind in ("hold", "touch_hold") and self.duration:
             return self.duration.approx_seconds(bpm)
         if self.kind == "slide":
-            if self.chain_type == "path" and self.duration is not None:
-                movement = self.duration.approx_seconds(bpm)
-            else:
-                durations = [s.duration for s in self.slide if s.duration]
-                seconds = [
-                    d.approx_seconds(bpm)
-                    for d in durations
-                    if d.approx_seconds(bpm) is not None
-                ]
-                movement = max(seconds) if seconds else None
+            seconds = [
+                d.approx_seconds(bpm)
+                for d in self._slide_durations()
+                if d.approx_seconds(bpm) is not None
+            ]
+            movement = max(seconds) if seconds else None
             return (60.0 / bpm if bpm > 0 else 0.0) + (movement or 0.0)
         return None
 
@@ -365,9 +377,9 @@ class Chart:
         if event.kind == "slide":
             bpm = self.bpm_at(event.tick)
             movement = [
-                s.duration.approx_seconds(bpm)
-                for s in event.slide
-                if s.duration is not None and s.duration.approx_seconds(bpm) is not None
+                d.approx_seconds(bpm)
+                for d in event._slide_durations()
+                if d.approx_seconds(bpm) is not None
             ]
             wait = 60.0 / bpm if bpm > 0 else 0.0
             return start + wait + (max(movement) if movement else 0.0)
@@ -485,16 +497,19 @@ class Maidata:
 
 def ticks_to_duration_fraction(ticks: int) -> tuple[int, int]:
     """Return ``(a, b)`` such that ``ticks = b/a`` whole notes (4/4)."""
-    if ticks <= 0:
-        raise ValueError("duration ticks must be positive")
+    if ticks < 0:
+        raise ValueError("duration ticks must be non-negative")
+    if ticks == 0:
+        # ``[1:0]`` is accepted by simai and means an instant/zero duration.
+        return 1, 0
     divisor = math.gcd(int(ticks), TICKS_PER_BAR)
     return TICKS_PER_BAR // divisor, int(ticks) // divisor
 
 
 def duration_fraction_to_ticks(a: int, b: int) -> int:
     """Convert ``b`` notes of ``1/a`` to ticks in a 4/4 bar."""
-    if a <= 0 or b <= 0:
-        raise ValueError("duration components must be positive")
+    if a <= 0 or b < 0:
+        raise ValueError("duration components must be non-negative")
     return int(round(TICKS_PER_BAR * b / a))
 
 

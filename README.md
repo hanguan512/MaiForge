@@ -31,6 +31,7 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 - **P3 v0 训练/推理代码：** log-mel 特征 + 音频编码器 + 事件 Transformer（架构 v2）、窗口数据集、难度条件、严格语法约束的采样/贪婪解码和 checkpoint 推理（尚未训练）。
 - **评估：** 起音 F1、位置/类型准确率、时长误差、滑动端点准确率以及难度画像差异。
 - **合成演示：** 不依赖任何受版权保护的音频，即可跑通完整的音频 → maidata 流程。
+- **本地 Web UI：** FastAPI 后端 + React/MUI 前端，提供数据集浏览、环形谱面预览器（可播放/镜像/变速）、P3 推理和训练任务控制台。
 
 ## 当前状态
 
@@ -106,6 +107,53 @@ PYTHONPATH=src .venv/bin/python scripts/make_demo.py out/demo
 
 该命令会在 `out/demo/` 下写入点击音轨、时间轴 JSON、生成的谱面、IR 以及一个小型原始数据集。
 
+## 本地 Web UI
+
+Web UI 由 FastAPI 后端（`src/mainote/webapp/`）和 React + MUI 前端（`web/`）组成，
+默认只监听 `127.0.0.1`。安装 Web 依赖并启动：
+
+```bash
+pip install -e '.[web]'
+mainote web                 # http://127.0.0.1:8765,自动打开浏览器
+mainote web --no-browser --port 9000
+```
+
+功能：
+
+- **数据集管理：** 从 AWMC-MaiArchive（`download.wmc.pub`）在线检索、批量下载并入库谱面；
+  也可以批量导入本地 zip（一个压缩包 = 一首歌，内含 `track.mp3` 与 `maidata`）。
+  导入会自动消毒歌名、避免覆盖已有数据，并写入 `data/raw/<song_id>/` + `data/processed/`。
+  已入库列表会显示每首歌的样本/log-mel 特征状态，可一键为缺失歌曲补全
+  （`mainote ml prepare-data`），单曲也可以点行内按钮补齐。
+- **浏览：** 扫描 `data/processed`、`out/demo/processed` 等数据目录，查看歌曲、
+  难度、统计和校验结果。可用 `MAINOTE_WEB_DATA_ROOTS=/a:/b` 覆盖数据目录列表。
+- **预览：** 播放页内嵌官方 MajdataView WebGL 构建（GPL-3.0，见
+  `src/mainote/webapp/majdataview/`），自动导入当前谱面与 MP3 音轨。播放器底部
+  提供进度条（可拖动跳转）、暂停/继续，以及本曲的难度切换；流速与偏移仍使用
+  MajdataView 自带设置。跳转或切换难度会重新载入播放器，需要再点一次播放
+  （浏览器音频激活限制）。另提供 maidata 复制/下载。
+- **推理：** 选择 checkpoint、音频、难度和采样参数，调用 `mainote ml infer`；
+  训练/推理任务共用同一个任务面板，可查看实时日志并预览生成的谱面。
+- **训练：** 从已下载的数据集中勾选歌曲，按歌曲自动切分 train/val；可一键导出所选
+  歌曲的样本与 log-mel 特征（`mainote ml prepare-data`），在页面内覆盖学习率、
+  batch size、窗口、模型层数/宽度等超参数，并实时查看网络层级图。启动后等价于
+  `mainote ml train --config <生成的 runs/<run>/train_config.yaml>`，任务面板会 tail
+  日志并绘制 `metrics.jsonl` 曲线；历史 run 可查看 checkpoint、`config.json` 和指标。
+  原始 `configs/` 文件不会被修改。
+
+前端开发模式（需要 Node.js 18+）：
+
+```bash
+cd web
+npm install          # 国内网络可加 --registry=https://registry.npmmirror.com
+npm run dev          # http://127.0.0.1:5173, /api 与 /majdataview 代理到 8765
+npm run build        # 产物写入 src/mainote/webapp/static
+```
+
+浏览器不会发送任意命令：后端只允许启动 `mainote` 的 train/infer 以及
+`ml prepare-data` 子命令，并校验所有输入路径位于仓库、`runs/` 或 `out/` 允许范围内；
+同一时间只运行一个任务。
+
 ## CLI 概览
 
 ```text
@@ -119,12 +167,15 @@ mainote analyze <audio> --out timing.json [--bpm N] [--first S]
 mainote generate <audio> -o maidata.txt [--difficulty master] [--level 12.9] [--density N] [--density-scale 1.3] [--slide-prob P] [--timing timing.json]
 mainote demo [--out out/demo]
 mainote dataset ingest <raw_dir> --out <processed_dir> [--align]
+mainote dataset fetch-wmc (-q <关键词> | --id <shortid>) [--limit 20] [--align]
 mainote dataset report <processed_dir> [--out report.json] [--csv report.csv]
 mainote dataset split <processed_dir> --out splits.json [--train 0.8 --val 0.1 --test 0.1]
 mainote dataset samples <processed_dir> --out samples_dir [--splits splits.json] [--require-audio]
-mainote ml prepare-features <processed_dir> --out <features_dir>
+mainote ml prepare-features <processed_dir> --out <features_dir> [--songs a,b]
+mainote ml prepare-data <processed_dir> --samples-out <dir> --features-out <dir> [--songs a,b] [--require-audio]
 mainote ml train --config configs/p3_base.yaml [--resume <checkpoint>] [--dry-run]
 mainote ml infer --checkpoint <best.pt> --audio <song.mp3> -o <maidata.txt>
+mainote web [--host 127.0.0.1] [--port 8765] [--no-browser]
 ```
 
 ## 架构
@@ -144,7 +195,7 @@ mainote ml infer --checkpoint <best.pt> --audio <song.mp3> -o <maidata.txt>
   ├─ 事件 IR                                  maidata/model.py
   │    ├─ tick（每拍 960，4/4 小节 3840）
   │    ├─ 类型 / 位置 / 标志 / 时长
-  │    └─ 滑动链（same_start 或 path）
+  │    └─ 滑动链（same_start / path / mixed）
   │
   ├─ 校验                                      maidata/validate.py
   ├─ 确定性编译器                              maidata/compiler.py
@@ -164,7 +215,21 @@ data/raw/<song_id>/
   meta.json            # 可选：{"title": "...", "artist": "..."}
 ```
 
-收录并检查：
+从 AWMC-MaiArchive 在线获取（`download.wmc.pub` 的公开 JSON API）：
+
+```bash
+# 搜索并下载前 20 首；--dry-run 只看匹配结果
+PYTHONPATH=src .venv/bin/python -m mainote dataset fetch-wmc -q Apollo --limit 20 --dry-run
+PYTHONPATH=src .venv/bin/python -m mainote dataset fetch-wmc -q Apollo --limit 20 --align
+
+# 按 shortid 精确下载（默认不下载背景视频，体积更小）
+PYTHONPATH=src .venv/bin/python -m mainote dataset fetch-wmc --id 011661 --include-video
+```
+
+下载缓存在 `out/wmc-cache/`，每首歌以 `wmc_<shortid>` 入库，已存在时默认跳过，`--force` 可重新导入；
+Web UI 的数据集页面提供同样的检索、多选与后台导入进度。
+
+本地收录并检查：
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m mainote dataset ingest data/raw \
@@ -194,7 +259,7 @@ data/samples/
     inote_1.json ... inote_5.json
 ```
 
-同一首歌的所有难度必须留在同一个划分中。切勿按谱面或窗口划分，否则同一段音频会泄漏到训练集和测试集。manifest 记录以下字段：`sample_id`、`chart_index`、`difficulty`、`level_num`、`audio`、`ir`、`first`、`initial_bpm`、`event_count`、`stats`、`alignment_confidence`、`valid` 和 `split`。
+同一首歌的所有难度必须留在同一个划分中。切勿按谱面或窗口划分，否则同一段音频会泄漏到训练集和测试集。manifest 记录以下字段：`sample_id`、`chart_index`、`difficulty`、`level_num`、`audio`、`ir`、`first`、`initial_bpm`、`event_count`、`stats`、`alignment_confidence`、`valid` 和 `split`。`valid` 按谱面判定，一张坏谱不会连带其他难度；训练只使用合法的谱面。
 
 ## P3 神经模型训练
 
@@ -244,10 +309,12 @@ src/mainote/
   maidata/      解析器、IR 模型、编译器、校验器、统计
   audio/        ffmpeg 解码、起音/BPM/节拍前端、TimingInfo
   generate/     基于规则的谱面生成器
-  dataset/      收录、对齐、报告、划分、按难度样本
+  dataset/      收录、在线谱库下载、zip 导入、对齐、报告、划分、按难度样本
   eval/         音符级评估指标
   ml/           P3 tokenizer、特征、数据集、模型、训练、推理
+  webapp/       FastAPI 后端 + 构建后的前端静态资源
   cli.py        argparse 命令行入口
+web/            React + MUI + Vite 前端源码
 configs/        训练配置
 docs/           训练和开发文档
 tests/          标准库 unittest 测试集
@@ -282,7 +349,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 PYTHONPATH=src python3 -m unittest tests.test_parser.TestTokenSyntax.test_path_chain -v
 ```
 
-测试集目前共有 84 个测试。项目没有单独的 lint/typecheck/CI 配置；`python3 -m compileall -q src tests scripts` 是一个有用的快速检查。
+测试集目前共有 154 个测试。项目没有单独的 lint/typecheck/CI 配置；`python3 -m compileall -q src tests scripts` 和 `cd web && npm run typecheck` 是有用的快速检查。
 
 ## 路线图
 

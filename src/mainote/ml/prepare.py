@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from ..audio.io import load_audio
 from .features import log_mel_spectrogram
@@ -20,12 +20,14 @@ def prepare_features(
     hop: int = 256,
     overwrite: bool = False,
     limit: int | None = None,
+    songs: Iterable[str] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> dict:
     processed_dir = Path(processed_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     metas = sorted(processed_dir.glob("*/meta.json"))
+    wanted = {str(song) for song in songs} if songs is not None else None
     if limit is not None:
         metas = metas[:limit]
 
@@ -39,6 +41,9 @@ def prepare_features(
             errors.append(f"{meta_path}: {exc}")
             continue
         song_id = str(meta.get("song_id") or meta_path.parent.name)
+        if wanted is not None and song_id not in wanted:
+            skipped += 1
+            continue
         audio_path = meta.get("audio")
         if not audio_path or not Path(audio_path).exists():
             if log:
@@ -91,6 +96,7 @@ def prepare_features(
         "n_mels": n_mels,
         "n_fft": n_fft,
         "hop": hop,
+        "songs": sorted(wanted) if wanted is not None else None,
     }
     (out_dir / "features_index.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"

@@ -69,8 +69,12 @@ CHAIN_TOKENS = {
     "single": "CHAIN_SINGLE",
     "same_start": "CHAIN_SAME",
     "path": "CHAIN_PATH",
+    "mixed": "CHAIN_MIXED",
 }
 CHAIN_FROM_TOKEN = {v: k for k, v in CHAIN_TOKENS.items()}
+
+# Marks the start of the next '*' branch inside a ``mixed`` slide.
+BRANCH_TOKEN = "BRANCH"
 
 FLAG_TOKENS = {
     "break": "FLAG_BREAK",
@@ -99,7 +103,7 @@ def token_category(token: str) -> str:
         return "duration"
     if token in TYPE_FROM_TOKEN:
         return "type"
-    if token.startswith(("SHAPE_", "CHAIN_", "TRACK_")):
+    if token.startswith(("SHAPE_", "CHAIN_", "TRACK_")) or token == BRANCH_TOKEN:
         return "structure"
     if token.startswith(("P_", "S_")):
         return "position"
@@ -170,9 +174,12 @@ class ChartVocabulary:
         tokens += list(TYPE_TOKENS.values())
         tokens += [f"P_{i}" for i in range(1, 9)]
         tokens += [f"S_{sensor}" for sensor in TOUCH_SENSORS]
-        tokens += ["DUR_NONE"] + [f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)]
+        tokens += ["DUR_NONE", "DUR_0"] + [
+            f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)
+        ]
         tokens += list(SHAPE_TOKENS.values())
         tokens += list(CHAIN_TOKENS.values())
+        tokens.append(BRANCH_TOKEN)
         tokens += list(FLAG_TOKENS.values())
         tokens += list(TRACK_FLAG_TOKENS.values())
         return cls(tokens)
@@ -261,6 +268,7 @@ class ChartTokenGrammar:
         self.current_pos: str | None = None
         self.current_duration: Duration | None = None
         self.current_chain: str | None = None
+        self.current_branch = 0
         self.current_flags: list[str] = []
         self.current_segments: list[SlideSegment] = []
         self.current_segment: SlideSegment | None = None
@@ -326,6 +334,7 @@ class ChartTokenGrammar:
             self.current_flags = []
             self.current_segments = []
             self.current_segment = None
+            self.current_branch = 0
             self.used_flags = set()
             self.state = "pos"
             return
@@ -379,12 +388,24 @@ class ChartTokenGrammar:
             self.state = "slide_shape"
             return
 
+        if token == BRANCH_TOKEN:
+            if self.state != "slide_after_dur" or self.current_chain != "mixed":
+                raise TokenizeError("branch token outside a mixed slide")
+            if self.current_segment is not None and self.current_segment.duration is None:
+                raise TokenizeError("mixed slide branch has no duration")
+            self.current_branch += 1
+            self.state = "slide_shape"
+            return
+
         if token in SHAPE_FROM_TOKEN:
             if self.state == "slide_shape":
                 if self.current_segment is not None:
                     self.current_segments.append(self.current_segment)
                 self.current_segment = SlideSegment(
-                    shape=SHAPE_FROM_TOKEN[token], end="", raw=""
+                    shape=SHAPE_FROM_TOKEN[token],
+                    end="",
+                    branch=self.current_branch,
+                    raw="",
                 )
                 if self.current_segment.shape == "V":
                     self.state = "slide_via"
@@ -397,7 +418,10 @@ class ChartTokenGrammar:
                 if self.current_segment is not None:
                     self.current_segments.append(self.current_segment)
                 self.current_segment = SlideSegment(
-                    shape=SHAPE_FROM_TOKEN[token], end="", raw=""
+                    shape=SHAPE_FROM_TOKEN[token],
+                    end="",
+                    branch=self.current_branch,
+                    raw="",
                 )
                 if self.current_segment.shape == "V":
                     self.state = "slide_via"
@@ -472,7 +496,7 @@ class ChartTokenGrammar:
                 }
             return allowed
         if state == "hold_dur":
-            return {"DUR_NONE"} | {f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)}
+            return {"DUR_NONE", "DUR_0"} | {f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)}
         if state in ("tap_flags", "hold_flags"):
             return self._allowed_flags() | {"END_EVENT"}
         if state == "slide_chain":
@@ -490,12 +514,14 @@ class ChartTokenGrammar:
                 allowed.discard(f"P_{self._segment_start()}")
             return allowed
         if state == "slide_dur":
-            return {"DUR_NONE"} | {f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)}
+            return {"DUR_NONE", "DUR_0"} | {f"DUR_{i}" for i in range(1, MAX_DUR_UNITS + 1)}
         if state == "slide_after_dur":
             allowed = {"END_EVENT"}
             allowed |= {token for token, flag in TRACK_FLAG_FROM_TOKEN.items() if flag not in self.current_segment.flags} if self.current_segment else set()
             if self.current_chain != "single":
                 allowed |= set(SHAPE_TOKENS.values())
+            if self.current_chain == "mixed":
+                allowed.add(BRANCH_TOKEN)
             allowed |= self._allowed_flags()
             return allowed
         if state == "slide_flags":
@@ -563,7 +589,14 @@ class ChartTokenGrammar:
 
     def _segment_start(self) -> str | None:
         """Start position of the slide segment currently being built."""
-        if not self.current_segments or self.current_chain == "same_start":
+        if not self.current_segments:
+            return self.current_pos
+        if self.current_chain == "same_start":
+            return self.current_pos
+        if self.current_chain == "mixed" and (
+            self.current_segment is None
+            or self.current_segments[-1].branch != self.current_segment.branch
+        ):
             return self.current_pos
         return self.current_segments[-1].end
 
@@ -591,7 +624,7 @@ class ChartTokenGrammar:
         if token == "DUR_NONE":
             return None
         units = int(token[len("DUR_") :])
-        if not 1 <= units <= MAX_DUR_UNITS:
+        if not 0 <= units <= MAX_DUR_UNITS:
             raise TokenizeError(f"duration out of range: {token}")
         return Duration(ticks=units * DUR_UNIT)
 
@@ -646,6 +679,7 @@ class ChartTokenGrammar:
         self.current_pos = None
         self.current_duration = None
         self.current_chain = None
+        self.current_branch = 0
         self.current_flags = []
         self.current_segments = []
         self.current_segment = None
@@ -746,7 +780,15 @@ class EventTokenizer:
             if not event.slide:
                 raise TokenizeError(f"slide at tick {event.tick} has no segments")
             tokens.append(CHAIN_TOKENS.get(event.chain_type, "CHAIN_SINGLE"))
+            previous_branch: int | None = None
             for index, segment in enumerate(event.slide):
+                if (
+                    event.chain_type == "mixed"
+                    and previous_branch is not None
+                    and segment.branch != previous_branch
+                ):
+                    tokens.append(BRANCH_TOKEN)
+                previous_branch = segment.branch
                 tokens.append(SHAPE_TOKENS[segment.shape])
                 if segment.shape == "V":
                     if not segment.via:
@@ -802,6 +844,6 @@ class EventTokenizer:
         else:
             return "DUR_NONE"
         units = int(round(ticks / DUR_UNIT))
-        if units <= 0:
+        if units < 0:
             return "DUR_NONE"
-        return f"DUR_{max(1, min(MAX_DUR_UNITS, units))}"
+        return f"DUR_{min(MAX_DUR_UNITS, units)}"

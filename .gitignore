@@ -12,6 +12,11 @@ dataset/*/bg.png
 dataset/*/pv.mp4
 dataset/*/maidata.txt
 
+# Frontend tooling (the built bundle is committed under src/mainote/webapp/static)
+web/node_modules/
+web/dist/
+web/.vite/
+
 # Generated / local data
 data/raw/
 data/processed/
