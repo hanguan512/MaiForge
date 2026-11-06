@@ -173,7 +173,7 @@ class WmcService:
                         "title": None,
                         "errors": [str(exc)],
                     }
-                job["results"].append(result)
+                job["results"].append(_normalize_result(result))
                 job["completed"] = position + 1
                 if position + 1 < len(ids) and not job["cancel_requested"]:
                     time.sleep(DOWNLOAD_DELAY)
@@ -266,11 +266,38 @@ class WmcService:
 
     @staticmethod
     def _public(job: dict[str, Any]) -> dict[str, Any]:
-        return {
+        public = {
             key: value
             for key, value in job.items()
             if key != "cancel_requested"
         }
+        # The import thread appends to ``results`` while the UI polls; snapshot
+        # the list so serialization never observes a half-updated job.
+        public["results"] = [dict(item) for item in job.get("results", [])]
+        return public
+
+
+def _normalize_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Guarantee the result shape the browser expects.
+
+    Failed downloads and cancelled songs do not run through
+    :func:`mainote.dataset.zipimport.import_zip_archive`, so they used to omit
+    ``warnings``.  The web UI spreads both arrays when rendering and crashed
+    with a blank page as soon as a single result lacked one.
+    """
+    normalized = dict(result)
+    for key in ("errors", "warnings"):
+        value = normalized.get(key)
+        if value is None:
+            normalized[key] = []
+        elif isinstance(value, (list, tuple)):
+            normalized[key] = [str(item) for item in value]
+        else:
+            normalized[key] = [str(value)]
+    normalized.setdefault("song_id", None)
+    normalized.setdefault("title", None)
+    normalized.setdefault("skipped", False)
+    return normalized
 
 
 def _zip_ok(path: Path) -> bool:

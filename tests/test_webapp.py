@@ -843,6 +843,27 @@ class WebAppTest(unittest.TestCase):
         jobs = self.client.get("/api/wmc/imports").json()["jobs"]
         self.assertEqual(len(jobs), 2)
 
+    def test_wmc_failed_result_keeps_browser_shape(self):
+        """Failed downloads must still carry ``errors``/``warnings`` arrays.
+
+        The web UI spreads both lists while rendering; a missing ``warnings``
+        key used to crash the React root and leave a blank page.
+        """
+
+        class _FailingClient(_FakeWmcClient):
+            def download_zip(self, chart, target, **kwargs):
+                raise RuntimeError("download exploded")
+
+        self.app.state.wmc.client = _FailingClient()
+        started = self.client.post("/api/wmc/import", json={"ids": ["099999"]})
+        self.assertEqual(started.status_code, 200)
+        job = self._wait_wmc_job(started.json()["id"])
+        self.assertEqual(job["status"], "done")
+        result = job["results"][0]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["errors"], ["download exploded"])
+        self.assertEqual(result["warnings"], [])
+
     # -- SPA fallback ----------------------------------------------------
     def test_spa_fallback_without_build(self):
         index = self.client.get("/")

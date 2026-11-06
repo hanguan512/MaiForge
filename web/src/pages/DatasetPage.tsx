@@ -708,7 +708,9 @@ export default function DatasetPage() {
               </Typography>
               <Box sx={{ mt: 1, borderTop: 1, borderColor: "divider" }}>
                 {results.map((item, index) => {
-                  const messages = [...item.errors, ...item.warnings].join("; ");
+                  const messages = [...(item.errors ?? []), ...(item.warnings ?? [])].join(
+                    "; ",
+                  );
                   return (
                     <Box
                       key={`${item.file}-${index}`}

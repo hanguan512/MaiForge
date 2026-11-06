@@ -31,7 +31,10 @@ from typing import Any
 
 WMC_BASE = "https://download.wmc.pub"
 WMC_API = f"{WMC_BASE}/api/v1/charts"
-WMC_HOSTS = {"download.wmc.pub", "oss.awmc.cc"}
+# Fixed download hosts only.  ``download.wmc.pub`` redirects chart zips to its
+# object store; both ``oss.awmc.cc`` and ``when.axql.love`` are hosts the
+# official API has pointed at over time.  The browser can never supply a URL.
+WMC_HOSTS = {"download.wmc.pub", "oss.awmc.cc", "when.axql.love"}
 USER_AGENT = "mainote/0.1 (+local dataset tool)"
 MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024  # 1 GiB
 MAX_IMAGE_BYTES = 16 * 1024 * 1024  # 16 MiB
@@ -88,7 +91,7 @@ class WmcClient:
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_error = exc
             if attempt < 2:
-                time.sleep(1.5 + attempt * 1.5)
+                _retry_sleep(attempt, last_error, 1.5)
         if payload is None:
             raise WmcError(f"无法访问 AWMC-MaiArchive: {last_error}") from last_error
         try:
@@ -221,7 +224,7 @@ class WmcClient:
             finally:
                 temporary.unlink(missing_ok=True)
             if attempt < 2:
-                time.sleep(1.5 + attempt * 1.5)
+                _retry_sleep(attempt, last_error, 1.5)
         raise WmcError(f"下载封面失败: {last_error}") from last_error
 
     # -- download --------------------------------------------------------
@@ -287,8 +290,25 @@ class WmcClient:
             finally:
                 temporary.unlink(missing_ok=True)
             if attempt < 2:
-                time.sleep(2.0 + attempt * 2.0)
+                _retry_sleep(attempt, last_error, 2.0)
         raise WmcError(f"下载谱面包失败: {last_error}") from last_error
+
+
+def _retry_sleep(attempt: int, exc: Exception | None, base: float) -> None:
+    """Back off between retries and honour ``Retry-After`` on HTTP 429.
+
+    Bulk imports routinely hit the archive's rate limit; retrying a few seconds
+    later just burns another request, so wait noticeably longer for 429.
+    """
+    delay = base * (attempt + 1)
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+        delay = max(delay, 5.0 * (attempt + 1))
+        header = exc.headers.get("Retry-After") if exc.headers else None
+        try:
+            delay = max(delay, float(header))
+        except (TypeError, ValueError):
+            pass
+    time.sleep(min(delay, 60.0))
 
 
 def _ensure_wmc_url(url: str, hosts: frozenset[str] | None = None) -> None:

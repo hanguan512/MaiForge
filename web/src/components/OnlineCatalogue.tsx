@@ -629,7 +629,9 @@ export default function OnlineCatalogue({
             <Box sx={{ borderTop: 1, borderColor: "divider" }}>
               {jobResults.map((result, index) => {
                 const status = resultStatus(result);
-                const messages = [...result.errors, ...result.warnings].join("; ");
+                const messages = [...(result.errors ?? []), ...(result.warnings ?? [])].join(
+                  "; ",
+                );
                 return (
                   <Box
                     key={`${result.shortid}-${index}`}
