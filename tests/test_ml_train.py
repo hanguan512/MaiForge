@@ -12,11 +12,13 @@ from mainote.maidata.model import TICKS_PER_BAR, Event
 from mainote.ml.tokenizer import ChartVocabulary
 
 if HAS_TORCH:
+    from mainote.ml.model import ChartModelConfig, build_model
     from mainote.ml.train import (
         ClassAccuracy,
         _decode_budget,
         _trim_generated_events,
         build_token_weights,
+        load_init_weights,
         sequence_cross_entropy,
     )
 
@@ -75,6 +77,78 @@ class TestTrainingLoss(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             build_token_weights(vocab, {"not-a-category": 2.0})
+
+    def test_load_init_weights_allows_only_new_structured_projections(self):
+        vocab = ChartVocabulary.default()
+        base_cfg = ChartModelConfig(
+            hidden=16,
+            audio_layers=1,
+            decoder_layers=1,
+            heads=4,
+            ffn=32,
+            dropout=0.0,
+            max_audio_frames=64,
+            max_tokens=32,
+            n_mels=16,
+        )
+        base = build_model(len(vocab.tokens), base_cfg, pad_id=vocab.pad_id)
+        checkpoint = {
+            "model": base.state_dict(),
+            "model_config": base_cfg.to_dict(),
+            "vocab_tokens": vocab.tokens,
+        }
+        experiment_cfg = ChartModelConfig(
+            **{
+                **base_cfg.to_dict(),
+                "position_features": True,
+                "duration_features": True,
+            }
+        )
+        model = build_model(
+            len(vocab.tokens),
+            experiment_cfg,
+            pad_id=vocab.pad_id,
+            vocab_tokens=vocab.tokens,
+        )
+        missing = load_init_weights(model, experiment_cfg, checkpoint, vocab)
+        self.assertEqual(
+            missing, ["duration_proj.weight", "position_proj.weight"]
+        )
+        # The new projections keep their zero initialization; every baseline
+        # parameter is copied exactly.
+        state = model.state_dict()
+        self.assertEqual(float(state["position_proj.weight"].abs().sum()), 0.0)
+        self.assertEqual(float(state["duration_proj.weight"].abs().sum()), 0.0)
+        for name, tensor in base.state_dict().items():
+            self.assertTrue(torch.equal(state[name], tensor), name)
+
+    def test_load_init_weights_rejects_architecture_mismatch(self):
+        vocab = ChartVocabulary.default()
+        base_cfg = ChartModelConfig(
+            hidden=16,
+            audio_layers=1,
+            decoder_layers=1,
+            heads=4,
+            ffn=32,
+            dropout=0.0,
+            max_audio_frames=64,
+            max_tokens=32,
+            n_mels=16,
+        )
+        base = build_model(len(vocab.tokens), base_cfg, pad_id=vocab.pad_id)
+        checkpoint = {
+            "model": base.state_dict(),
+            "model_config": base_cfg.to_dict(),
+            "vocab_tokens": vocab.tokens,
+        }
+        other_cfg = ChartModelConfig(
+            **{**base_cfg.to_dict(), "hidden": 32}
+        )
+        other = build_model(
+            len(vocab.tokens), other_cfg, pad_id=vocab.pad_id
+        )
+        with self.assertRaises(RuntimeError):
+            load_init_weights(other, other_cfg, checkpoint, vocab)
 
     def test_class_accuracy_by_token_category(self):
         vocab = ChartVocabulary(

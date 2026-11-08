@@ -58,6 +58,48 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def load_init_weights(
+    model,
+    model_cfg: ChartModelConfig,
+    checkpoint: dict[str, Any],
+    vocab: ChartVocabulary,
+) -> list[str]:
+    """Warm-start a fresh model from a baseline checkpoint.
+
+    Architecture fields must match exactly; the only exception is the optional
+    structured-token flags, whose projections are zero-initialized in the new
+    model and therefore absent from a baseline checkpoint.  Returns the sorted
+    names of parameters that kept their initialization.
+    """
+    init_cfg = ChartModelConfig.from_dict(checkpoint.get("model_config"))
+    mismatched = [
+        field
+        for field in ChartModelConfig.__dataclass_fields__
+        if field not in ("position_features", "duration_features")
+        and getattr(init_cfg, field) != getattr(model_cfg, field)
+    ]
+    if mismatched:
+        raise RuntimeError(
+            "--init-from checkpoint architecture differs in: "
+            + ", ".join(mismatched)
+        )
+    init_vocab = checkpoint.get("vocab_tokens")
+    if init_vocab and init_vocab != vocab.tokens:
+        raise RuntimeError("--init-from checkpoint vocabulary differs")
+    allowed_missing: set[str] = set()
+    if model_cfg.position_features and not init_cfg.position_features:
+        allowed_missing.add("position_proj.weight")
+    if model_cfg.duration_features and not init_cfg.duration_features:
+        allowed_missing.add("duration_proj.weight")
+    missing, unexpected = model.load_state_dict(checkpoint["model"], strict=False)
+    if set(missing) != allowed_missing or unexpected:
+        raise RuntimeError(
+            "--init-from checkpoint is not compatible with this model; "
+            f"missing={sorted(missing)} unexpected={sorted(unexpected)}"
+        )
+    return sorted(missing)
+
+
 def build_loader(
     dataset: ChartWindowDataset,
     *,
@@ -197,6 +239,9 @@ class ClassAccuracy:
 
 
 def train(args: argparse.Namespace) -> int:
+    init_from = getattr(args, "init_from", None)
+    if args.resume and init_from:
+        raise ValueError("--resume and --init-from are mutually exclusive")
     cfg = load_config(args.config)
     seed = int(args.seed if args.seed is not None else cfg.get("seed", 42))
     set_seed(seed)
@@ -307,7 +352,10 @@ def train(args: argparse.Namespace) -> int:
     )
 
     model = build_model(
-        len(vocab.tokens), model_cfg, pad_id=vocab.pad_id
+        len(vocab.tokens),
+        model_cfg,
+        pad_id=vocab.pad_id,
+        vocab_tokens=vocab.tokens,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -393,12 +441,14 @@ def train(args: argparse.Namespace) -> int:
         if checkpoint.get("vocab_tokens") and checkpoint["vocab_tokens"] != vocab.tokens:
             raise RuntimeError("checkpoint vocabulary differs from current tokenizer")
         saved_model_cfg = checkpoint.get("model_config")
-        if saved_model_cfg and saved_model_cfg != model_cfg.to_dict():
+        if saved_model_cfg and (
+            ChartModelConfig.from_dict(saved_model_cfg) != model_cfg
+        ):
             raise RuntimeError(
                 "model config differs from checkpoint. Architecture v2 "
-                "(embed_scale/final_norm/audio_stride) is not backward "
-                "compatible with v1 checkpoints; retrain or use the matching "
-                "config."
+                "(embed_scale/final_norm/audio_stride) and the optional "
+                "structured-token features are not backward compatible with "
+                "older checkpoints; retrain or use the matching config."
             )
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -411,6 +461,19 @@ def train(args: argparse.Namespace) -> int:
         best_val = float(checkpoint.get("best_val_loss", best_val))
         if checkpoint.get("best_metric_name") == checkpoint_metric:
             best_metric = float(checkpoint.get("best_metric", best_metric))
+
+    if init_from:
+        init_checkpoint = torch.load(init_from, map_location=device)
+        missing = load_init_weights(model, model_cfg, init_checkpoint, vocab)
+        print(
+            json.dumps(
+                {
+                    "init_from": str(init_from),
+                    "init_epoch": init_checkpoint.get("epoch"),
+                    "initialized_missing": missing,
+                }
+            )
+        )
 
     print(
         json.dumps(
@@ -1128,6 +1191,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="configs/p3_base.yaml")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--resume", default=None)
+    parser.add_argument(
+        "--init-from",
+        default=None,
+        help=(
+            "Load model weights from a baseline checkpoint and train a fresh "
+            "experiment (the structured-feature projections stay zero-init)."
+        ),
+    )
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)

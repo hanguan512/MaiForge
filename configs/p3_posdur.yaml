@@ -1,0 +1,81 @@
+# P3 base config. See docs/TRAINING.md for the full workflow.
+seed: 42
+device: auto
+output_dir: runs/p3_posdur
+
+data:
+  manifest: data/samples/manifest.jsonl
+  features_dir: data/features
+  window_bars: 16
+  stride_bars: 8
+  context_bars: 2
+  min_events: 1
+  max_windows_per_chart: null
+  max_audio_frames: 4096
+  chart_cache_size: 512
+  feature_cache_size: 64
+  min_alignment: 0.0
+  spec_augment:
+    prob: 0.5
+    freq_mask: 8
+    time_mask: 16
+
+model:
+  hidden: 256
+  audio_layers: 4
+  decoder_layers: 6
+  heads: 8
+  ffn: 1024
+  dropout: 0.1
+  max_audio_frames: 4096
+  max_tokens: 4096
+  n_mels: 80
+  # Architecture v2 (incompatible with v1 checkpoints; retrain).
+  embed_scale: true
+  final_norm: true
+  # Total mel downsampling: 2 => ~43 fps encoder memory (v1 used 4).
+  audio_stride: 2
+  # Experiment: add fixed ring geometry / duration features to structured
+  # tokens (P_*, S_*, DUR_*) before the decoder.  The projections are
+  # zero-initialized, so the model starts equivalent to p3_base and learns
+  # only a delta.  Vocabulary, grammar and checkpoints stay compatible when
+  # these flags are off.
+  position_features: true
+  duration_features: true
+
+train:
+  batch_size: 8
+  grad_accum: 2
+  epochs: 30
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_steps: 500
+  grad_clip: 1.0
+  label_smoothing: 0.0
+  amp: true
+  num_workers: 4
+  log_every: 20
+  save_every: 5
+  patience: 8
+  max_steps: null
+  # Rebalance the 86%-duration vocabulary in the token-level objective.
+  token_class_weights:
+    type: 2.0
+    SLIDE: 3.0
+    TOUCH: 3.0
+    TOUCH_HOLD: 3.0
+    structure: 1.5
+    position: 1.25
+  checkpoint_metric: note_score
+  note_eval:
+    enabled: true
+    # 4 songs x up to 8 windows = 32 windows.  The previous 8 x 16 coverage
+    # made an epoch-0 evaluation dominate wall-clock (the decoder has no KV
+    # cache); 32 is enough to select best.pt, and the final epoch always runs.
+    # Decoding is also capped at ~2x the reference token count per window.
+    every_n_epochs: 5
+    max_songs: 4
+    max_windows: 8
+    max_new_tokens: 2048
+    temperature: 0.0
+    tolerance_seconds: 0.06

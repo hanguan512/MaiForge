@@ -167,6 +167,10 @@ python -m mainote ml train --config configs/p3_base.yaml --limit-batches 1
 python -m mainote ml train --config configs/p3_base.yaml \
   --resume runs/p3_base/last.pt
 
+# 结构化 token 特征实验：从 baseline 权重热启动（只新增零初始化的投影）
+python -m mainote ml train --config configs/p3_posdur_warm.yaml \
+  --init-from runs/web_train/best.pt
+
 # 指定 GPU、短跑
 python -m mainote ml train --config configs/p3_base.yaml \
   --device cuda --max-steps 2000
@@ -266,6 +270,13 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
   正弦位置编码，避免 PE 幅度约为 token 内容的 25 倍；输出投影与 embedding 绑定。
 - **兼容性：** v2 与 v1 checkpoint 不兼容（新增 final LayerNorm、前端结构和
   embedding 尺度不同），必须重新训练；加载旧 checkpoint 会给出明确错误。
+- **结构化 token 特征（实验）：** `model.position_features` /
+  `model.duration_features` 会在 decoder 输入侧，为 `P_*`、`S_*` 和 `DUR_*`
+  附加固定的几何/时长特征（按钮 1–8 的环形 sin/cos、触控传感器所在环的
+  one-hot、时长的 log/线性值），再经零初始化的线性投影加到 token embedding。
+  词表、grammar、IR 和旧 checkpoint 都不变；两个开关默认关闭。启用后可用
+  `configs/p3_posdur.yaml` 从头训练，或用 `configs/p3_posdur_warm.yaml`
+  + `--init-from` 从 baseline 权重热启动。
 - **窗口：** 目标窗口 16 小节，stride 8，音频上下文 2 小节；窗口音频超过
   `max_audio_frames` 会报错，不会静默裁剪。v0 仍不把窗口开始前已经活跃的
   Hold/Slide 输入模型。

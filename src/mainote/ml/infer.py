@@ -44,7 +44,10 @@ def load_checkpoint(
     vocab = ChartVocabulary([str(t) for t in tokens])
     tokenizer = EventTokenizer(vocab)
     model = build_model(
-        len(vocab.tokens), model_cfg, pad_id=vocab.pad_id
+        len(vocab.tokens),
+        model_cfg,
+        pad_id=vocab.pad_id,
+        vocab_tokens=vocab.tokens,
     ).to(device)
     try:
         model.load_state_dict(checkpoint["model"])
