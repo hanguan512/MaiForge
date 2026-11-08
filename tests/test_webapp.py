@@ -728,6 +728,73 @@ class WebAppTest(unittest.TestCase):
         self.assertFalse(results[2]["ok"])
         self.assertTrue(any("zip" in error for error in results[2]["errors"]))
 
+    def test_dataset_export_and_bundle_reimport(self):
+        payload = _zip_bytes(
+            {
+                "myosotis/track.mp3": b"fake-audio",
+                "myosotis/maidata.txt": MAIDATA_TEXT.encode("utf-8"),
+                "myosotis/bg.png": b"\x89PNG\r\n\x1a\n",
+            }
+        )
+        imported = self.client.post(
+            "/api/datasets/import",
+            files=[("files", ("myosotis.zip", payload, "application/zip"))],
+        ).json()["results"][0]
+        self.assertTrue(imported["ok"], imported)
+
+        exported = self.client.post(
+            "/api/datasets/export",
+            json={"song_ids": ["myosotis"], "filename": "corpus"},
+        )
+        self.assertEqual(exported.status_code, 200)
+        body = exported.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["file"], "corpus.maidb")
+        self.assertEqual(body["song_count"], 1)
+        self.assertEqual(body["songs"][0]["id"], "myosotis")
+        self.assertTrue(body["download_url"].startswith("/api/datasets/exports/"))
+        export_path = self.repo / body["path"]
+        self.assertTrue(export_path.is_file())
+        with zipfile.ZipFile(export_path) as archive:
+            self.assertIn("maidb.json", archive.namelist())
+            self.assertIn("songs/myosotis/track.mp3", archive.namelist())
+
+        download = self.client.get(body["download_url"])
+        self.assertEqual(download.status_code, 200)
+        self.assertIn("attachment", download.headers.get("content-disposition", ""))
+        self.assertTrue(download.content.startswith(b"PK"))
+        self.assertEqual(self.client.get("/api/datasets/exports/nope.maidb").status_code, 400)
+
+        reimported = self.client.post(
+            "/api/datasets/import",
+            files=[("files", ("corpus.maidb", download.content, "application/zip"))],
+        ).json()["results"][0]
+        self.assertTrue(reimported["ok"], reimported)
+        self.assertEqual(reimported["kind"], "bundle")
+        self.assertEqual(reimported["bundle_song_count"], 1)
+        self.assertEqual(reimported["imported"], 1)
+        self.assertEqual(reimported["failed"], 0)
+        self.assertEqual(reimported["results"][0]["song_id"], "myosotis_2")
+        self.assertEqual(reimported["results"][0]["title"], "Demo Song")
+
+    def test_dataset_export_validation(self):
+        empty = self.client.post("/api/datasets/export", json={"song_ids": []})
+        self.assertEqual(empty.status_code, 400)
+        self.assertIn("至少一首", empty.json()["error"])
+
+        traversal = self.client.post(
+            "/api/datasets/export", json={"song_ids": ["../demo"]}
+        )
+        self.assertEqual(traversal.status_code, 400)
+
+        # ``demo`` has no raw folder in this miniature repo, so the raw
+        # source needed for a portable bundle is missing.
+        missing = self.client.post(
+            "/api/datasets/export", json={"song_ids": ["demo"]}
+        )
+        self.assertEqual(missing.status_code, 400)
+        self.assertIn("原始歌曲目录", missing.json()["error"])
+
     def test_dataset_import_duplicate_names_and_zip_slip(self):
         good = _zip_bytes(
             {

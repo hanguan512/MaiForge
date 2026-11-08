@@ -48,7 +48,7 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 
 > 想在 Jupyter 里直接操作，可以打开 [`notebooks/quickstart_linux.ipynb`](notebooks/quickstart_linux.ipynb)：按顺序运行单元格即可完成安装依赖、启动 Web UI、健康检查和停止服务（Linux）。
 >
-> Linux 一键启动：`python3 scripts/setup.py`。脚本会复用或创建 `.venv`、检测 NVIDIA GPU，按需安装 Linux 版 PyTorch（GPU 用 CUDA 12.8 wheel，CPU 用 CPU wheel）和 `requirements-train.txt`，然后启动 Web UI 并打印端口。普通依赖默认从清华 PyPI 镜像安装（`--pip-index` 可覆盖），PyTorch 始终走官方 wheel 索引；安装期间每 10 秒打印一次进度心跳（`--progress-interval` 可调）。`python3 scripts/setup.py --check` 只检测环境，不安装、不启动。
+> Linux 一键启动：`python3 scripts/setup_linux.py`（`python3 scripts/setup.py` 会根据系统自动选择脚本；Windows 用 `python scripts\setup_win.py`）。脚本会复用或创建 `.venv`、检测 NVIDIA GPU，按需安装 Linux 版 PyTorch（GPU 用 CUDA 12.8 wheel，CPU 用 CPU wheel）和 `requirements-train.txt`，然后启动 Web UI 并打印端口。普通依赖默认从清华 PyPI 镜像安装（`--pip-index` 可覆盖），PyTorch 始终走官方 wheel 索引；安装期间每 10 秒打印一次进度心跳（`--progress-interval` 可调）。依赖已就绪时直接跳过 pip（状态记录在 `.venv/.mainote_setup_state.json`，依赖清单或 Python 版本变化才重装），`--force-install` 可强制重装。`--check` 只检测环境，不安装、不启动。
 
 ### 0. 环境要求
 
@@ -122,7 +122,8 @@ PYTHONPATH=src .venv/bin/python -m mainote web
 1. 打开 http://127.0.0.1:8765。
 2. 进入 **数据集** 页面：
    - 从 AWMC-MaiArchive 在线检索并导入谱面；
-   - 或上传本地 zip（一个 zip = 一首歌，内含 `track.*` 和 `maidata`）。
+   - 或上传本地 zip（一个 zip = 一首歌，内含 `track.*` 和 `maidata`），也可以上传一个 `.maidb` 数据集一次导入多首；
+   - 勾选歌曲后可导出为 `.maidb`，用于备份或迁移到另一台机器。
 3. 如果还没有数据，可以先跑合成演示：
 
    ```bash
@@ -254,8 +255,9 @@ python -m pip install -r requirements-train.txt
 功能：
 
 - **数据集管理：** 从 AWMC-MaiArchive（`download.wmc.pub`）在线检索、批量下载并入库谱面；
-  也可以批量导入本地 zip（一个压缩包 = 一首歌，内含 `track.mp3` 与 `maidata`）。
-  导入会自动消毒歌名、避免覆盖已有数据，并写入 `data/raw/<song_id>/` + `data/processed/`。
+  也可以批量导入本地 zip（一个压缩包 = 一首歌，内含 `track.mp3` 与 `maidata`）或
+  `.maidb` 数据集（可包含多首）。勾选歌曲后可一键导出 `.maidb`，下载后可直接在另一台
+  机器批量导入。导入会自动消毒歌名、避免覆盖已有数据，并写入 `data/raw/<song_id>/` + `data/processed/`。
   已入库列表会显示每首歌的样本/log-mel 特征状态，可一键为缺失歌曲补全
   （`mainote ml prepare-data`），单曲也可以点行内按钮补齐。
 - **浏览：** 扫描 `data/processed`、`out/demo/processed` 等数据目录，查看歌曲、
@@ -300,6 +302,8 @@ mainote analyze <audio> --out timing.json [--bpm N] [--first S]
 mainote generate <audio> -o maidata.txt [--difficulty master] [--level 12.9] [--density N] [--density-scale 1.3] [--slide-prob P] [--timing timing.json]
 mainote demo [--out out/demo]
 mainote dataset ingest <raw_dir> --out <processed_dir> [--align]
+mainote dataset export <out.maidb> [--raw data/raw] [--songs a,b] [--processed data/processed] [--no-audio]
+mainote dataset import <file.zip|file.maidb>... [--raw data/raw] [--out data/processed] [--align] [--dry-run]
 mainote dataset fetch-wmc (-q <关键词> | --id <shortid>) [--limit 20] [--align]
 mainote dataset report <processed_dir> [--out report.json] [--csv report.csv]
 mainote dataset split <processed_dir> --out splits.json [--train 0.8 --val 0.1 --test 0.1]
@@ -394,6 +398,30 @@ data/samples/
 
 同一首歌的所有难度必须留在同一个划分中。切勿按谱面或窗口划分，否则同一段音频会泄漏到训练集和测试集。manifest 记录以下字段：`sample_id`、`chart_index`、`difficulty`、`level_num`、`audio`、`ir`、`first`、`initial_bpm`、`event_count`、`stats`、`alignment_confidence`、`valid` 和 `split`。`valid` 按谱面判定，一张坏谱不会连带其他难度；训练只使用合法的谱面。
 
+### 数据集打包与迁移（`.maidb`）
+
+`.maidb` 是带清单的 zip 数据集，用于批量备份或迁移到另一台机器：
+
+```bash
+# 从原始目录导出（默认导出 --raw 下的全部歌曲）
+mainote dataset export out/corpus.maidb --raw data/raw
+
+# 从 processed 选择歌曲：通过 meta.json 的 raw_dir 找到原始文件
+mainote dataset export out/corpus.maidb --processed data/processed \
+  --songs wmc_011661,song_b
+
+# 只导出谱面（不带音频）
+mainote dataset export out/charts.maidb --songs song_a --no-audio
+
+# 批量导入；zip 与 maidb 可以混在同一个命令里
+mainote dataset import out/corpus.maidb --raw data/raw --out data/processed
+mainote dataset import out/corpus.maidb --dry-run   # 只读清单，不解压
+```
+
+格式：顶层 `maidb.json` 清单 + 每首一个 `songs/<id>/` 目录（`maidata`、音频、背景图）。清单记录歌名/作者/难度数以及每个文件的 SHA-256。导入会重新走 `dataset ingest`，所以导出机器上的绝对路径不会带到新机器；同名歌曲自动追加 `_2`、`_3`，不覆盖已有数据。导入复用 zip 的安全检查（拒绝绝对路径、`..`、符号链接和加密成员；限制 1 GB 压缩包 / 2 GB 解压后 / 5000 个成员），并逐个校验清单里的文件哈希。没有 `maidb.json` 的 `.maidb` 会按单曲 zip 处理。
+
+Web UI 的数据集页可以在本地曲库里勾选歌曲后「导出所选」，下载得到的就是同样格式的 `.maidb`；导入页可以直接上传它。
+
 ## P3 神经模型训练
 
 P3 需要 PyTorch 和 GPU。在已经安装 Web/音频依赖的基础上，安装训练依赖：
@@ -445,7 +473,7 @@ src/mainote/
   maidata/      解析器、IR 模型、编译器、校验器、统计
   audio/        ffmpeg 解码、起音/BPM/节拍前端、TimingInfo
   generate/     基于规则的谱面生成器
-  dataset/      收录、在线谱库下载、zip 导入、对齐、报告、划分、按难度样本
+  dataset/      收录、在线谱库下载、zip/maidb 导入导出、对齐、报告、划分、按难度样本
   eval/         音符级评估指标
   ml/           P3 tokenizer、特征、数据集、模型、训练、推理
   webapp/       FastAPI 后端 + 构建后的前端静态资源

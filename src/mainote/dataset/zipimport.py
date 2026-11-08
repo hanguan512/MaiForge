@@ -111,7 +111,7 @@ def _find_meta(root: Path, maidata: Path) -> Path | None:
     return matches[0] if matches else None
 
 
-def _validate_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+def validate_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     members: list[zipfile.ZipInfo] = []
     total = 0
     for info in archive.infolist():
@@ -135,13 +135,129 @@ def _validate_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     return members
 
 
-def _extract(archive: zipfile.ZipFile, members: list[zipfile.ZipInfo], target: Path) -> None:
+def extract_members(
+    archive: zipfile.ZipFile, members: list[zipfile.ZipInfo], target: Path
+) -> None:
     for info in members:
         pure = PurePosixPath(info.filename.replace("\\", "/"))
         destination = target.joinpath(*pure.parts)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with archive.open(info) as source, destination.open("wb") as output:
             shutil.copyfileobj(source, output, length=COPY_CHUNK)
+
+
+def empty_song_result(filename: str) -> dict[str, Any]:
+    """The per-song result shape shared by zip and bundle importers."""
+    return {
+        "file": filename,
+        "kind": "song",
+        "ok": False,
+        "song_id": None,
+        "title": None,
+        "artist": None,
+        "chart_count": 0,
+        "has_audio": False,
+        "has_background": False,
+        "raw": None,
+        "processed": None,
+        "warnings": [],
+        "errors": [],
+    }
+
+
+def locate_song_files(root: Path) -> tuple[Path | None, Path | None, Path | None]:
+    """Locate the maidata, primary audio and background files under ``root``."""
+    return _find_maidata(root), _find_audio(root), _find_background(root)
+
+
+def allocate_song_id(
+    base: str,
+    raw_root: Path,
+    processed_root: Path,
+    taken: set[str] | None = None,
+) -> str:
+    taken = set(taken or ())
+    taken.update(
+        child.name
+        for root in (raw_root, processed_root)
+        if root.is_dir()
+        for child in root.iterdir()
+        if child.is_dir()
+    )
+    return _unique_id(_sanitize_id(base), taken)
+
+
+def import_song_directory(
+    staged: Path,
+    *,
+    raw_root: Path,
+    processed_root: Path,
+    filename: str,
+    align: bool = False,
+    song_id: str | None = None,
+) -> dict[str, Any]:
+    """Copy one staged song directory into ``raw_root`` and ingest it.
+
+    Raises on failure; callers turn that into a per-file/per-song result so a
+    batch import can keep going.
+    """
+    result = empty_song_result(filename)
+    maidata = _find_maidata(staged)
+    if maidata is None:
+        raise ValueError("未找到 maidata 文件")
+    audio = _find_audio(staged)
+    if audio is None:
+        result["warnings"].append("未找到音频文件,仅导入谱面")
+    background = _find_background(staged)
+
+    raw_root.mkdir(parents=True, exist_ok=True)
+    processed_root.mkdir(parents=True, exist_ok=True)
+    if song_id is None:
+        song_id = allocate_song_id(
+            _sanitize_id(Path(filename).stem), raw_root, processed_root
+        )
+    song_raw = raw_root / song_id
+    song_raw.mkdir(parents=True)
+
+    shutil.copy2(maidata, song_raw / "maidata.txt")
+    if audio is not None:
+        shutil.copy2(audio, song_raw / f"track{audio.suffix.lower()}")
+    if background is not None:
+        shutil.copy2(background, song_raw / f"bg{background.suffix.lower()}")
+    meta = _find_meta(staged, maidata)
+    if meta is not None:
+        shutil.copy2(meta, song_raw / "meta.json")
+
+    result["song_id"] = song_id
+    result["has_background"] = background is not None
+    result["raw"] = str(song_raw)
+
+    try:
+        ingested = ingest_dataset(song_raw, processed_root, align=align)
+    except Exception:
+        shutil.rmtree(song_raw, ignore_errors=True)
+        raise
+    result["warnings"].extend(ingested.warnings)
+    result["errors"].extend(ingested.errors)
+    if not ingested.records:
+        # Do not leave a half-imported raw song behind: a retry would
+        # otherwise allocate a new ``_2`` id and keep accumulating.
+        shutil.rmtree(song_raw, ignore_errors=True)
+        result["raw"] = None
+        result["song_id"] = None
+        raise ValueError("谱面导入失败,详见错误信息")
+    record = ingested.records[0]
+    result.update(
+        {
+            "ok": True,
+            "title": record.get("title"),
+            "artist": record.get("artist"),
+            "chart_count": int(record.get("chart_count") or 0),
+            "has_audio": bool(record.get("has_audio")),
+            "processed": str(processed_root / song_id),
+        }
+    )
+    return result
 
 
 def import_zip_archive(
@@ -159,20 +275,7 @@ def import_zip_archive(
     of raising, so batch importers can keep going.
     """
     display = filename or source.name
-    result: dict[str, Any] = {
-        "file": display,
-        "ok": False,
-        "song_id": None,
-        "title": None,
-        "artist": None,
-        "chart_count": 0,
-        "has_audio": False,
-        "has_background": False,
-        "raw": None,
-        "processed": None,
-        "warnings": [],
-        "errors": [],
-    }
+    result = empty_song_result(display)
     try:
         _import_locked(
             source,
@@ -200,71 +303,19 @@ def _import_locked(
     result: dict[str, Any],
 ) -> None:
     with zipfile.ZipFile(source) as archive:
-        members = _validate_members(archive)
+        members = validate_members(archive)
         staging_parent = str(staging_root) if staging_root is not None else None
         with tempfile.TemporaryDirectory(
             prefix="mainote_import_", dir=staging_parent
         ) as tmp:
             staging = Path(tmp)
-            _extract(archive, members, staging)
-
-            maidata = _find_maidata(staging)
-            if maidata is None:
-                raise ValueError("压缩包内未找到 maidata 文件")
-            audio = _find_audio(staging)
-            if audio is None:
-                result["warnings"].append("压缩包内未找到音频文件,仅导入谱面")
-            background = _find_background(staging)
-
-            raw_root.mkdir(parents=True, exist_ok=True)
-            processed_root.mkdir(parents=True, exist_ok=True)
-            song_id = _allocate_id(filename, raw_root, processed_root)
-            song_raw = raw_root / song_id
-            song_raw.mkdir(parents=True)
-
-            shutil.copy2(maidata, song_raw / "maidata.txt")
-            if audio is not None:
-                shutil.copy2(audio, song_raw / f"track{audio.suffix.lower()}")
-            if background is not None:
-                shutil.copy2(background, song_raw / f"bg{background.suffix.lower()}")
-            meta = _find_meta(staging, maidata)
-            if meta is not None:
-                shutil.copy2(meta, song_raw / "meta.json")
-
-            result["song_id"] = song_id
-            result["has_background"] = background is not None
-            result["raw"] = str(song_raw)
-
-            ingested = ingest_dataset(song_raw, processed_root, align=align)
-            result["warnings"].extend(ingested.warnings)
-            result["errors"].extend(ingested.errors)
-            if not ingested.records:
-                # Do not leave a half-imported raw song behind: a retry would
-                # otherwise allocate a new ``_2`` id and keep accumulating.
-                shutil.rmtree(song_raw, ignore_errors=True)
-                result["raw"] = None
-                result["song_id"] = None
-                raise ValueError("谱面导入失败,详见错误信息")
-            record = ingested.records[0]
+            extract_members(archive, members, staging)
             result.update(
-                {
-                    "ok": True,
-                    "title": record.get("title"),
-                    "artist": record.get("artist"),
-                    "chart_count": int(record.get("chart_count") or 0),
-                    "has_audio": bool(record.get("has_audio")),
-                    "processed": str(processed_root / song_id),
-                }
+                import_song_directory(
+                    staging,
+                    raw_root=raw_root,
+                    processed_root=processed_root,
+                    filename=filename,
+                    align=align,
+                )
             )
-
-
-def _allocate_id(filename: str, raw_root: Path, processed_root: Path) -> str:
-    base = _sanitize_id(Path(filename).stem)
-    taken = {
-        child.name
-        for root in (raw_root, processed_root)
-        if root.is_dir()
-        for child in root.iterdir()
-        if child.is_dir()
-    }
-    return _unique_id(base, taken)

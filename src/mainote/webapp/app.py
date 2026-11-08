@@ -172,13 +172,35 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     def api_datasets() -> dict[str, Any]:
         return importer.summary()
 
+    @app.post("/api/datasets/export")
+    def api_dataset_export(payload: dict[str, Any]) -> dict[str, Any]:
+        song_ids = payload.get("song_ids")
+        if not isinstance(song_ids, list) or not song_ids:
+            raise ValueError("请选择至少一首歌曲")
+        filename = payload.get("filename")
+        if filename is not None and not isinstance(filename, str):
+            raise ValueError("filename 必须是字符串")
+        return importer.export(
+            [str(item) for item in song_ids], filename=filename
+        )
+
+    @app.get("/api/datasets/exports/{name}")
+    def api_dataset_export_download(name: str) -> FileResponse:
+        target = importer.export_path(name)
+        return FileResponse(
+            target,
+            media_type="application/zip",
+            filename=target.name,
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.post("/api/datasets/import")
     async def api_dataset_import(
         files: list[UploadFile] = File(...),
         align: bool = Form(False),
     ) -> dict[str, Any]:
         if not files:
-            raise ValueError("请选择至少一个 zip 压缩包")
+            raise ValueError("请选择至少一个压缩包")
         upload_root = settings.upload_dir / "datasets"
         upload_root.mkdir(parents=True, exist_ok=True)
         results: list[dict[str, Any]] = []
@@ -188,8 +210,8 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             tmp_dir = Path(tmp)
             for position, upload in enumerate(files):
                 name = Path(upload.filename or f"dataset_{position}.zip").name
-                if Path(name).suffix.lower() != ".zip":
-                    results.append(_failed_import(name, "只支持 .zip 压缩包"))
+                if Path(name).suffix.lower() not in {".zip", ".maidb"}:
+                    results.append(_failed_import(name, "只支持 .zip 或 .maidb"))
                     await upload.close()
                     continue
                 target = tmp_dir / f"{position:03d}_{name}"
@@ -203,7 +225,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                             handle.write(chunk)
                     results.append(
                         await run_in_threadpool(
-                            importer.import_zip,
+                            importer.import_file,
                             target,
                             filename=name,
                             align=align,

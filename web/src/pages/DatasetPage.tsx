@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   FormControlLabel,
@@ -20,6 +21,7 @@ import {
   AutoFixHigh,
   CloudUpload,
   DeleteOutline,
+  Download,
   FolderZip,
   Refresh,
   Search,
@@ -35,6 +37,7 @@ import { ReadyMarks } from "../components/ReadyMark";
 import StatStrip from "../components/StatStrip";
 import { accentFor, PALETTE } from "../theme";
 import type {
+  DatasetExportResponse,
   DatasetImportItem,
   DatasetImportResponse,
   DatasetSong,
@@ -63,15 +66,19 @@ function isReady(song: DatasetSong): boolean {
 
 function SongRow({
   song,
+  selected,
   canBackfill,
   preparing,
+  onSelect,
   onBackfill,
   onPreview,
   onDetail,
 }: {
   song: DatasetSong;
+  selected: boolean;
   canBackfill: boolean;
   preparing: boolean;
+  onSelect: () => void;
   onBackfill: () => void;
   onPreview: () => void;
   onDetail: () => void;
@@ -109,6 +116,13 @@ function SongRow({
       }}
     >
       <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
+        <Checkbox
+          size="small"
+          checked={selected}
+          onChange={onSelect}
+          inputProps={{ "aria-label": `选择 ${song.title}` }}
+          sx={{ p: 0.25, ml: -0.75, flex: "none" }}
+        />
         <Jacket title={song.title} id={song.id} src={song.cover_url} size={42} radius={1} />
         <Box sx={{ minWidth: 0 }}>
           <Typography
@@ -195,6 +209,9 @@ export default function DatasetPage() {
   const [prepareNote, setPrepareNote] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<LibraryFilter>("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
+  const [exportNote, setExportNote] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const prepareTimer = useRef<number | null>(null);
 
@@ -230,16 +247,19 @@ export default function DatasetPage() {
   const addFiles = (incoming: FileList | File[] | null) => {
     if (!incoming) return;
     const candidates = Array.from(incoming);
-    const zips = candidates.filter((file) => file.name.toLowerCase().endsWith(".zip"));
-    if (zips.length !== candidates.length) {
-      setError("只接受 .zip 压缩包，其余文件已忽略");
+    const archives = candidates.filter((file) => {
+      const name = file.name.toLowerCase();
+      return name.endsWith(".zip") || name.endsWith(".maidb");
+    });
+    if (archives.length !== candidates.length) {
+      setError("只接受 .zip 或 .maidb，其余文件已忽略");
     } else {
       setError(null);
     }
     setFiles((current) => {
       const keys = new Set(current.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
       const merged = [...current];
-      for (const file of zips) {
+      for (const file of archives) {
         const key = `${file.name}:${file.size}:${file.lastModified}`;
         if (!keys.has(key)) {
           keys.add(key);
@@ -287,6 +307,57 @@ export default function DatasetPage() {
     ready: readyCount,
     missing: missingSongs.length,
     noaudio: songs.filter((song) => !song.has_audio).length,
+  };
+
+  const selectedSongs = useMemo(
+    () => songs.filter((song) => selected.has(song.id)),
+    [songs, selected],
+  );
+  const allVisibleSelected =
+    visibleSongs.length > 0 && visibleSongs.every((song) => selected.has(song.id));
+
+  const toggleSelect = (songId: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(songId)) next.delete(songId);
+      else next.add(songId);
+      return next;
+    });
+  };
+
+  const toggleVisible = () => {
+    const ids = visibleSongs.map((song) => song.id);
+    setSelected((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => (allVisibleSelected ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  };
+
+  const exportSelected = async () => {
+    if (!selectedSongs.length || exporting) return;
+    setExporting(true);
+    setError(null);
+    setExportNote(`正在打包 ${selectedSongs.length} 首歌曲…`);
+    try {
+      const result = await postJson<DatasetExportResponse>("/api/datasets/export", {
+        song_ids: selectedSongs.map((song) => song.id),
+      });
+      const link = document.createElement("a");
+      link.href = result.download_url;
+      link.download = result.file;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setExportNote(
+        `已导出 ${result.song_count} 首歌曲（${formatBytes(result.bytes)}）：${result.file}`,
+      );
+    } catch (caught) {
+      setExportNote(null);
+      setError(formatError(caught));
+    } finally {
+      setExporting(false);
+    }
   };
 
   const backfill = async (songIds: string[]) => {
@@ -348,7 +419,7 @@ export default function DatasetPage() {
 
   const upload = async () => {
     if (!files.length) {
-      setError("请先选择至少一个 zip 压缩包");
+      setError("请先选择至少一个 .zip 或 .maidb");
       return;
     }
     setImporting(true);
@@ -379,7 +450,7 @@ export default function DatasetPage() {
     <Stack spacing={3}>
       <PageHeader
         title="数据集"
-        description="本地曲库、在线谱库和 zip 导入都在这里。入库后自动出现在 data/processed，样本与 log-mel 特征可一键补全。"
+        description="本地曲库、在线谱库、zip / maidb 导入与 maidb 导出都在这里。入库后自动出现在 data/processed，样本与 log-mel 特征可一键补全。"
         actions={
           <Button startIcon={<Refresh />} onClick={() => void load()} disabled={loading}>
             刷新
@@ -403,6 +474,14 @@ export default function DatasetPage() {
           <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
             <span>{prepareNote}</span>
             {preparing ? <CircularProgress size={13} /> : null}
+          </Stack>
+        </Alert>
+      ) : null}
+      {exportNote ? (
+        <Alert severity="info" onClose={() => setExportNote(null)}>
+          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+            <span>{exportNote}</span>
+            {exporting ? <CircularProgress size={13} /> : null}
           </Stack>
         </Alert>
       ) : null}
@@ -471,6 +550,29 @@ export default function DatasetPage() {
                   ? `补全样本与特征 (${missingSongs.length})`
                   : "样本与特征已齐全"}
             </Button>
+            <Button size="small" disabled={!visibleSongs.length} onClick={toggleVisible}>
+              {allVisibleSelected ? "取消全选" : "全选当前"}
+            </Button>
+            {selectedSongs.length ? (
+              <Button size="small" onClick={() => setSelected(new Set())}>
+                清空选择
+              </Button>
+            ) : null}
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={
+                exporting ? <CircularProgress size={13} /> : <Download sx={{ fontSize: 17 }} />
+              }
+              disabled={exporting || !selectedSongs.length}
+              onClick={() => void exportSelected()}
+            >
+              {exporting
+                ? "正在打包…"
+                : selectedSongs.length
+                  ? `导出所选 (${selectedSongs.length})`
+                  : "导出所选"}
+            </Button>
           </Stack>
 
           {preparing ? <LinearProgress sx={{ mb: 1 }} /> : null}
@@ -513,8 +615,10 @@ export default function DatasetPage() {
               <SongRow
                 key={song.id}
                 song={song}
+                selected={selected.has(song.id)}
                 canBackfill={song.has_audio && (!song.sample_ready || !song.features_ready)}
                 preparing={preparing}
+                onSelect={() => toggleSelect(song.id)}
                 onBackfill={() => void backfill([song.id])}
                 onPreview={() =>
                   navigate(
@@ -609,10 +713,10 @@ export default function DatasetPage() {
             <CloudUpload sx={{ fontSize: 38, color: "text.secondary", flex: "none" }} />
             <Box sx={{ minWidth: 0 }}>
               <Typography sx={{ fontSize: 17, fontWeight: 600 }}>
-                把 zip 拖到这里，或点击选择
+                把 zip / maidb 拖到这里，或点击选择
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.35 }}>
-                一个压缩包 = 一首歌，可多选批量导入；同名歌曲会追加 _2、_3，不会覆盖已有数据。
+                一个 zip = 一首歌，一个 .maidb 可包含多首，支持多选批量导入；同名歌曲会追加 _2、_3，不会覆盖已有数据。
               </Typography>
             </Box>
             <Box sx={{ flexGrow: 1 }} />
@@ -624,7 +728,7 @@ export default function DatasetPage() {
               type="file"
               hidden
               multiple
-              accept=".zip,application/zip"
+              accept=".zip,.maidb,application/zip"
               onChange={(event) => {
                 addFiles(event.target.files);
                 event.target.value = "";
@@ -694,8 +798,8 @@ export default function DatasetPage() {
               {importing
                 ? "正在导入…"
                 : files.length
-                  ? `导入 ${files.length} 个压缩包`
-                  : "导入压缩包"}
+                  ? `导入 ${files.length} 个文件`
+                  : "导入压缩包 / 数据集"}
             </Button>
           </Stack>
 
@@ -711,6 +815,9 @@ export default function DatasetPage() {
                   const messages = [...(item.errors ?? []), ...(item.warnings ?? [])].join(
                     "; ",
                   );
+                  const isBundle = item.kind === "bundle";
+                  const partial = isBundle && !item.ok && (item.imported ?? 0) > 0;
+                  const status = item.ok ? "成功" : partial ? "部分" : "失败";
                   return (
                     <Box
                       key={`${item.file}-${index}`}
@@ -728,18 +835,82 @@ export default function DatasetPage() {
                         <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
                           {item.file}
                         </Typography>
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            color: item.ok ? "text.secondary" : "error.main",
-                            display: "block",
-                            wordBreak: "break-word",
-                          }}
-                        >
-                          {item.ok
-                            ? `${item.title ?? item.song_id} (${item.song_id}) · ${item.chart_count} 张谱面${messages ? ` · ${messages}` : ""}`
-                            : messages || "导入失败"}
-                        </Typography>
+                        {isBundle ? (
+                          <Box sx={{ mt: 0.25 }}>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                color: item.ok ? "text.secondary" : partial ? "text.secondary" : "error.main",
+                                display: "block",
+                                wordBreak: "break-word",
+                              }}
+                            >
+                              maidb 数据集 · 导入 {item.imported ?? 0}/
+                              {item.bundle_song_count ?? 0} 首
+                              {item.failed ? ` · 失败 ${item.failed} 首` : ""}
+                              {messages ? ` · ${messages}` : ""}
+                            </Typography>
+                            {item.results?.length ? (
+                              <Box
+                                sx={{
+                                  mt: 0.5,
+                                  maxHeight: 220,
+                                  overflowY: "auto",
+                                  borderLeft: 1,
+                                  borderColor: "divider",
+                                  pl: 1.25,
+                                }}
+                              >
+                                {item.results.map((song, songIndex) => {
+                                  const songMessages = [
+                                    ...(song.errors ?? []),
+                                    ...(song.warnings ?? []),
+                                  ].join("; ");
+                                  return (
+                                    <Typography
+                                      key={`${song.song_id ?? song.source_id ?? "song"}-${songIndex}`}
+                                      variant="caption"
+                                      component="div"
+                                      sx={{
+                                        color: song.ok ? "text.secondary" : "error.main",
+                                        wordBreak: "break-word",
+                                      }}
+                                    >
+                                      <Box
+                                        component="span"
+                                        sx={{
+                                          fontWeight: 700,
+                                          color: accentFor(
+                                            theme.palette.mode,
+                                            song.ok ? PALETTE.green : PALETTE.red,
+                                          ),
+                                        }}
+                                      >
+                                        {song.ok ? "✓" : "✗"}
+                                      </Box>{" "}
+                                      {song.ok
+                                        ? `${song.title ?? song.source_id ?? song.song_id} (${song.song_id}) · ${song.chart_count} 张谱面${songMessages ? ` · ${songMessages}` : ""}`
+                                        : `${song.source_id ?? song.song_id ?? "歌曲"}: ${songMessages || "导入失败"}`}
+                                    </Typography>
+                                  );
+                                })}
+                              </Box>
+                            ) : null}
+                          </Box>
+                        ) : (
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              color: item.ok ? "text.secondary" : "error.main",
+                              display: "block",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {item.ok
+                              ? `${item.title ?? item.song_id} (${item.song_id}) · ${item.chart_count} 张谱面${messages ? ` · ${messages}` : ""}`
+                              : messages || "导入失败"}
+                          </Typography>
+                        )}
                       </Box>
                       <Box
                         component="span"
@@ -748,11 +919,15 @@ export default function DatasetPage() {
                           fontWeight: 700,
                           color: accentFor(
                             theme.palette.mode,
-                            item.ok ? PALETTE.green : PALETTE.red,
+                            item.ok
+                              ? PALETTE.green
+                              : partial
+                                ? PALETTE.gold
+                                : PALETTE.red,
                           ),
                         }}
                       >
-                        {item.ok ? "成功" : "失败"}
+                        {status}
                       </Box>
                     </Box>
                   );

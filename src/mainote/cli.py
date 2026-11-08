@@ -175,6 +175,42 @@ def main(argv: list[str] | None = None) -> int:
     p_fetch.add_argument("--dry-run", action="store_true", help="only print matches")
     p_fetch.set_defaults(func=_cmd_dataset_fetch_wmc)
 
+    p_export = dsub.add_parser(
+        "export", help="export songs into one portable .maidb bundle"
+    )
+    p_export.add_argument("output", help="output .maidb path")
+    p_export.add_argument("--raw", default="data/raw", help="raw dataset root")
+    p_export.add_argument(
+        "--processed",
+        default=None,
+        help=(
+            "processed root; resolves songs through meta.raw_dir"
+            " (without --songs, exports every processed song)"
+        ),
+    )
+    p_export.add_argument(
+        "--songs", default=None, help="comma-separated song ids (default: all in --raw)"
+    )
+    p_export.add_argument(
+        "--no-audio",
+        dest="include_audio",
+        action="store_false",
+        help="omit audio files (chart-only bundle)",
+    )
+    p_export.set_defaults(func=_cmd_dataset_export)
+
+    p_import = dsub.add_parser(
+        "import", help="import .zip song archives or .maidb bundles"
+    )
+    p_import.add_argument("sources", nargs="+", help="zip or maidb files")
+    p_import.add_argument("--raw", default="data/raw", help="raw dataset root")
+    p_import.add_argument("--out", default="data/processed", help="processed root")
+    p_import.add_argument("--align", action="store_true", help="run audio alignment")
+    p_import.add_argument(
+        "--dry-run", action="store_true", help="inspect archives without importing"
+    )
+    p_import.set_defaults(func=_cmd_dataset_import)
+
     p_ml = sub.add_parser("ml", help="P3 neural model feature prep, training, inference")
     mlsub = p_ml.add_subparsers(dest="ml_command", required=True)
 
@@ -724,6 +760,174 @@ def _cmd_dataset_fetch_wmc(args) -> int:
         if position + 1 < len(charts) and args.delay > 0:
             time.sleep(args.delay)
     print(f"完成：成功/跳过 {len(charts) - failures}/{len(charts)}")
+    return 1 if failures else 0
+
+
+def _cmd_dataset_export(args) -> int:
+    from .dataset.bundle import export_bundle, resolve_raw_directory
+    from .audio.io import find_maidata_file
+
+    raw_root = Path(args.raw)
+    processed_root = Path(args.processed) if args.processed else None
+    pairs: list[tuple[str, Path]] = []
+    if args.songs:
+        ids = [part.strip() for part in args.songs.split(",") if part.strip()]
+        if not ids:
+            print("--songs 不能为空", file=sys.stderr)
+            return 1
+        seen: set[str] = set()
+        for song_id in ids:
+            if song_id in seen:
+                continue
+            seen.add(song_id)
+            try:
+                if processed_root is not None:
+                    processed_song = processed_root / song_id
+                    if not processed_song.is_dir():
+                        raise FileNotFoundError(f"{processed_song} 不存在")
+                    source = resolve_raw_directory(processed_song)
+                else:
+                    source = raw_root / song_id
+                    if find_maidata_file(source) is None:
+                        raise FileNotFoundError(f"{source} 里没有 maidata 文件")
+                pairs.append((song_id, source))
+            except (OSError, ValueError) as exc:
+                print(f"[{song_id}] 无法导出: {exc}", file=sys.stderr)
+                return 1
+    elif processed_root is not None:
+        if not processed_root.is_dir():
+            print(f"processed 目录不存在: {processed_root}", file=sys.stderr)
+            return 1
+        for child in sorted(processed_root.iterdir()):
+            if not child.is_dir() or not (child / "meta.json").is_file():
+                continue
+            try:
+                pairs.append((child.name, resolve_raw_directory(child)))
+            except ValueError as exc:
+                print(f"[{child.name}] 跳过: {exc}", file=sys.stderr)
+        if not pairs:
+            print(f"{processed_root} 下没有可导出的歌曲", file=sys.stderr)
+            return 1
+    else:
+        if not raw_root.is_dir():
+            print(f"原始数据目录不存在: {raw_root}", file=sys.stderr)
+            return 1
+        for child in sorted(raw_root.iterdir()):
+            if child.is_dir() and find_maidata_file(child) is not None:
+                pairs.append((child.name, child))
+        if not pairs:
+            print(f"{raw_root} 下没有可导出的歌曲", file=sys.stderr)
+            return 1
+
+    try:
+        summary = export_bundle(
+            pairs, args.output, include_audio=args.include_audio
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports and exits nonzero
+        print(f"导出失败: {exc}", file=sys.stderr)
+        return 1
+    for song in summary["songs"]:
+        audio = "有声" if song["has_audio"] else "无音频"
+        print(
+            f"  {song['id']}  {song['title']}  "
+            f"{song['chart_count']} 个难度  {audio}"
+        )
+    for warning in summary["warnings"]:
+        print(f"  warning: {warning}")
+    print(
+        f"完成：{summary['song_count']} 首 / {summary['file_count']} 个文件 / "
+        f"{summary['bytes'] / 1024 / 1024:.1f} MB"
+    )
+    print(f"wrote bundle: {Path(summary['path']).resolve()}")
+    return 0
+
+
+def _cmd_dataset_import(args) -> int:
+    from .dataset.bundle import import_bundle, inspect_bundle
+    from .dataset.zipimport import import_zip_archive
+
+    raw_root = Path(args.raw)
+    processed_root = Path(args.out)
+    failures = 0
+    for source_text in args.sources:
+        source = Path(source_text)
+        if not source.is_file():
+            print(f"[{source.name}] 文件不存在: {source}", file=sys.stderr)
+            failures += 1
+            continue
+        suffix = source.suffix.lower()
+        if suffix not in {".zip", ".maidb"}:
+            print(f"[{source.name}] 只支持 .zip 或 .maidb", file=sys.stderr)
+            failures += 1
+            continue
+        if args.dry_run:
+            try:
+                info = inspect_bundle(source)
+            except Exception as exc:  # noqa: BLE001 - report per source
+                print(f"[{source.name}] 无法读取: {exc}", file=sys.stderr)
+                failures += 1
+                continue
+            if info["format"]:
+                print(
+                    f"[{source.name}] maidb v{info['version']} / "
+                    f"{info['song_count']} 首 / {info['files']} 个文件"
+                )
+                for song in info["songs"]:
+                    print(
+                        f"  {song['id']}  {song.get('title') or ''}  "
+                        f"{song.get('chart_count') or 0} 个难度"
+                    )
+            else:
+                print(
+                    f"[{source.name}] 无 maidb 清单，按单曲 zip 导入 "
+                    f"({info['files']} 个文件)"
+                )
+            continue
+
+        if suffix == ".maidb":
+            result = import_bundle(
+                source,
+                raw_root=raw_root,
+                processed_root=processed_root,
+                align=args.align,
+            )
+            print(
+                f"[{source.name}] 导入 {result['imported']}/{result['bundle_song_count']} 首"
+                + (f"，失败 {result['failed']} 首" if result["failed"] else "")
+            )
+            for song in result["results"]:
+                if song.get("ok"):
+                    print(
+                        f"  [{song.get('source_id')}] -> {song['song_id']}："
+                        f"{song['title']} / {song['chart_count']} 个难度"
+                    )
+                    for warning in song.get("warnings") or []:
+                        print(f"    warning: {warning}")
+                else:
+                    print(
+                        f"  [{song.get('source_id')}] 失败: "
+                        f"{'; '.join(song.get('errors') or ['未知错误'])}"
+                    )
+            for error in result.get("errors") or []:
+                print(f"  error: {error}")
+            failures += 1 if result["failed"] or not result["imported"] else 0
+        else:
+            result = import_zip_archive(
+                source,
+                raw_root=raw_root,
+                processed_root=processed_root,
+                align=args.align,
+            )
+            if result["ok"]:
+                print(
+                    f"[{source.name}] 入库 {result['song_id']}："
+                    f"{result['title']} / {result['chart_count']} 个难度"
+                )
+                for warning in result["warnings"]:
+                    print(f"  warning: {warning}")
+            else:
+                failures += 1
+                print(f"[{source.name}] 失败: {'; '.join(result['errors'])}")
     return 1 if failures else 0
 
 

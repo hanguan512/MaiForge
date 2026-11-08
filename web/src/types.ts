@@ -306,6 +306,7 @@ export interface DatasetSummary {
 
 export interface DatasetImportItem {
   file: string;
+  kind?: "song" | "bundle";
   ok: boolean;
   song_id: string | null;
   title: string | null;
@@ -316,12 +317,41 @@ export interface DatasetImportItem {
   processed: string | null;
   warnings: string[];
   errors: string[];
+  source_id?: string | null;
+  bundle_song_count?: number;
+  imported?: number;
+  failed?: number;
+  results?: DatasetImportItem[];
 }
 
 export interface DatasetImportResponse {
   ok: boolean;
   align: boolean;
   results: DatasetImportItem[];
+}
+
+export interface DatasetExportSong {
+  id: string;
+  title: string;
+  artist: string;
+  chart_count: number;
+  has_audio: boolean;
+  has_background: boolean;
+}
+
+export interface DatasetExportResponse {
+  ok: boolean;
+  format: string;
+  version: number;
+  file: string;
+  path: string;
+  song_count: number;
+  file_count: number;
+  bytes: number;
+  download_url: string;
+  songs: DatasetExportSong[];
+  warnings: string[];
+  errors: string[];
 }
 
 export interface WmcLevel {
