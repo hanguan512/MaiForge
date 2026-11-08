@@ -247,6 +247,14 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--config", default="configs/p3_base.yaml")
     p_train.add_argument("--output-dir", default=None)
     p_train.add_argument("--resume", default=None)
+    p_train.add_argument(
+        "--init-from",
+        default=None,
+        help=(
+            "initialize model weights from a baseline checkpoint, keeping "
+            "the structured-token projections at zero"
+        ),
+    )
     p_train.add_argument("--device", default=None)
     p_train.add_argument("--seed", type=int, default=None)
     p_train.add_argument("--num-workers", type=int, default=None)

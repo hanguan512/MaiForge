@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+from .token_features import (
+    DURATION_FEATURE_DIM,
+    POSITION_FEATURE_DIM,
+    build_duration_features,
+    build_position_features,
+)
 
 
 @dataclass
@@ -30,6 +37,12 @@ class ChartModelConfig:
     # Total temporal downsampling of the mel frontend.  2 keeps ~43 fps,
     # which preserves much more timing detail than the v1 stride of 4.
     audio_stride: int = 2
+    # Optional structured-token input features (experiment).  Both default to
+    # off so baseline checkpoints keep their exact parameter set.  When on,
+    # the model needs the vocabulary token strings to build fixed feature
+    # tables; the vocabulary itself is unchanged.
+    position_features: bool = False
+    duration_features: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ChartModelConfig":
@@ -47,6 +60,8 @@ class ChartModelConfig:
             embed_scale=bool(data.get("embed_scale", True)),
             final_norm=bool(data.get("final_norm", True)),
             audio_stride=int(data.get("audio_stride", 2)),
+            position_features=bool(data.get("position_features", False)),
+            duration_features=bool(data.get("duration_features", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -63,6 +78,8 @@ class ChartModelConfig:
             "embed_scale": self.embed_scale,
             "final_norm": self.final_norm,
             "audio_stride": self.audio_stride,
+            "position_features": self.position_features,
+            "duration_features": self.duration_features,
         }
 
     def validate(self) -> None:
@@ -192,12 +209,30 @@ class AudioEncoder(nn.Module):
 
 
 class ChartModel(nn.Module):
+    @staticmethod
+    def _require_vocab_tokens(
+        vocab_tokens: Sequence[str] | None,
+        vocab_size: int,
+        flag: str,
+    ) -> Sequence[str]:
+        if vocab_tokens is None:
+            raise ValueError(
+                f"config.{flag}=true requires the vocabulary token strings"
+            )
+        if len(vocab_tokens) != vocab_size:
+            raise ValueError(
+                f"vocab_tokens has {len(vocab_tokens)} entries but "
+                f"vocab_size is {vocab_size}"
+            )
+        return vocab_tokens
+
     def __init__(
         self,
         vocab_size: int,
         config: ChartModelConfig,
         *,
         pad_id: int = 0,
+        vocab_tokens: Sequence[str] | None = None,
     ):
         super().__init__()
         self.config = config
@@ -215,6 +250,37 @@ class ChartModel(nn.Module):
         nn.init.normal_(self.token_embed.weight, mean=0.0, std=0.02)
         with torch.no_grad():
             self.token_embed.weight[self.pad_id].zero_()
+        # Optional fixed geometry/duration features.  The projections start at
+        # zero, so at initialization a model with these flags on is exactly
+        # equivalent to the baseline; the features only add a learned delta.
+        self.position_proj: nn.Linear | None = None
+        self.duration_proj: nn.Linear | None = None
+        if config.position_features:
+            tokens = self._require_vocab_tokens(
+                vocab_tokens, vocab_size, "position_features"
+            )
+            self.register_buffer(
+                "position_feature_table",
+                build_position_features(tokens),
+                persistent=False,
+            )
+            self.position_proj = nn.Linear(
+                POSITION_FEATURE_DIM, config.hidden, bias=False
+            )
+            nn.init.zeros_(self.position_proj.weight)
+        if config.duration_features:
+            tokens = self._require_vocab_tokens(
+                vocab_tokens, vocab_size, "duration_features"
+            )
+            self.register_buffer(
+                "duration_feature_table",
+                build_duration_features(tokens),
+                persistent=False,
+            )
+            self.duration_proj = nn.Linear(
+                DURATION_FEATURE_DIM, config.hidden, bias=False
+            )
+            nn.init.zeros_(self.duration_proj.weight)
         # Scale embeddings to unit-ish variance before adding sinusoidal PE.
         # Without this, PE (std ~0.707) is ~25x larger than token content
         # (std ~0.028), so position dominates the residual stream.
@@ -238,7 +304,16 @@ class ChartModel(nn.Module):
 
     def token_embeddings(self, tokens: torch.Tensor) -> torch.Tensor:
         """Token ids -> decoder input embeddings (shared by train and decode)."""
-        return self.token_pos(self.token_embed(tokens) * self.embed_scale)
+        embedding = self.token_embed(tokens)
+        if self.position_proj is not None:
+            embedding = embedding + self.position_proj(
+                self.position_feature_table[tokens]
+            )
+        if self.duration_proj is not None:
+            embedding = embedding + self.duration_proj(
+                self.duration_feature_table[tokens]
+            )
+        return self.token_pos(embedding * self.embed_scale)
 
     def decode_tokens(
         self,
@@ -291,5 +366,11 @@ def build_model(
     config: ChartModelConfig,
     *,
     pad_id: int = 0,
+    vocab_tokens: Sequence[str] | None = None,
 ) -> ChartModel:
-    return ChartModel(vocab_size=vocab_size, config=config, pad_id=pad_id)
+    return ChartModel(
+        vocab_size=vocab_size,
+        config=config,
+        pad_id=pad_id,
+        vocab_tokens=vocab_tokens,
+    )
