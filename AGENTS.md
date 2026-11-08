@@ -20,6 +20,7 @@
   `mainote ml prepare-features ... [--songs a,b]`, `mainote ml prepare-data <processed_dir> --songs a,b`, `mainote ml train --config configs/p3_base.yaml`, `mainote ml infer --checkpoint ... --audio ... -o ...`.
 - P3 needs `torch`/`pyyaml` (the `train` extra). This workspace has CPU-only PyTorch for smoke tests; use a GPU server for real training.
 - Web UI: `pip install -r requirements.txt` then `mainote web [--host 127.0.0.1] [--port 8765] [--no-browser]`. Frontend dev: `cd web && npm run dev` (Vite 5173 proxies `/api` to 8765); `npm run build` writes `src/mainote/webapp/static/` and runs `tsc --noEmit` first.
+- Linux one-shot setup: `python3 scripts/setup.py` reuses/creates `.venv`, detects NVIDIA GPU, installs Linux PyTorch (CUDA 12.8 or CPU) plus `requirements-train.txt` from the Tsinghua PyPI mirror by default, then starts the Web UI and prints its port. Add `--check` to detect only, `--port`/`--host` to override the listen address, or `--pip-index` to change the mirror.
 - No lint/typecheck/CI config; verify with unittest plus `PYTHONPATH=src python3 -m compileall -q src tests scripts` and `cd web && npm run typecheck`.
 - If pip cannot resolve packages, use a domestic mirror, e.g. `-i https://pypi.tuna.tsinghua.edu.cn/simple`; for npm use `--registry=https://registry.npmmirror.com`.
 

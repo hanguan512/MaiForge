@@ -47,6 +47,8 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 ## 快速启动（Web UI）
 
 > 想在 Jupyter 里直接操作，可以打开 [`notebooks/quickstart_linux.ipynb`](notebooks/quickstart_linux.ipynb)：按顺序运行单元格即可完成安装依赖、启动 Web UI、健康检查和停止服务（Linux）。
+>
+> Linux 一键启动：`python3 scripts/setup.py`。脚本会复用或创建 `.venv`、检测 NVIDIA GPU，按需安装 Linux 版 PyTorch（GPU 用 CUDA 12.8 wheel，CPU 用 CPU wheel）和 `requirements-train.txt`，然后启动 Web UI 并打印端口。普通依赖默认从清华 PyPI 镜像安装（`--pip-index` 可覆盖），PyTorch 始终走官方 wheel 索引。`python3 scripts/setup.py --check` 只检测环境，不安装、不启动。
 
 ### 0. 环境要求
 
