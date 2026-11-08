@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## What this repo is
-- Audio → event IR → **maidata** (simai/maimai DX) toolkit. P0/P1/P2 are implemented. P3 v0 training/inference code exists in `src/mainote/ml/`, but no checkpoint is trained or shipped. P3 v0 uses architecture v2 (embedding scaling, final LayerNorm, stride-2 audio frontend), default sampling decode, window-normalized weighted token CE, note-level validation for checkpoint selection, manual tempo-map support, and no cross-window Hold/Slide state.
+- Audio → event IR → **maidata** (simai/maimai DX) toolkit. P0/P1/P2 are implemented. P3 v0 training/inference code exists in `src/mainote/ml/`, but no checkpoint is trained or shipped. P3 v0 uses architecture v2 (embedding scaling, final LayerNorm, stride-2 audio frontend), default sampling decode, window-normalized weighted token CE, note-level validation for checkpoint selection, manual tempo-map support, and no cross-window Hold/Slide state. Optional structured-token features (`model.position_features` / `model.duration_features`) add fixed ring-geometry and duration vectors through zero-initialized projections; they are off by default and do not change the vocabulary.
 - A local web UI (`mainote web`) wraps browsing, the official MajdataView WebGL preview, online chart downloads, inference, and training jobs. The training page can select songs from a processed dataset, export samples/log-mel features for just that selection, override training hyperparameters, and preview the model layer stack. The dataset page shows per-song sample/feature readiness and can backfill missing data in one click. Backend is FastAPI in `src/mainote/webapp/`; frontend source is `web/` (React + MUI + Vite); the built bundle is committed under `src/mainote/webapp/static/`.
 - The dataset page can search and download charts from AWMC-MaiArchive (`https://download.wmc.pub/`) via its public JSON API and import them as `wmc_<shortid>` songs. The same flow is available from the CLI (`dataset fetch-wmc`).
 - Datasets can be moved in bulk as `.maidb` bundles: the export writes a manifest + raw per-song folders into one zip, and import re-ingests every song. CLI: `mainote dataset export` / `dataset import`; Web: check songs on the dataset page and use 「导出所选」, then upload the `.maidb` on the import tab.
@@ -11,7 +11,7 @@
 
 ## Commands
 - P0 has no third-party deps: `PYTHONPATH=src python3 -m mainote validate|stats|roundtrip|parse|compile|eval ...`
-- Full test suite (audio tests need numpy; web tests need `.[web]`): `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v` (180 tests).
+- Full test suite (audio tests need numpy; web tests need `.[web]`): `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v` (189 tests).
 - P0-only tests: `PYTHONPATH=src python3 -m unittest discover -s tests` (numpy/torch/web-extra tests skip).
 - Single test: `PYTHONPATH=src python3 -m unittest tests.test_parser.TestTokenSyntax.test_path_chain -v`
 - Online catalogue from the CLI: `mainote dataset fetch-wmc -q Apollo --limit 5` or `--id 011661`; downloads cache under `out/wmc-cache/`, imports into `data/raw/wmc_<id>/` + `data/processed/wmc_<id>/`. Use `--dry-run`, `--align`, `--include-video`, `--force`, `--delay`.
@@ -32,7 +32,7 @@
 - `src/mainote/generate/rule.py`: hand-tuned rule baseline; `DIFFICULTY_RULES` and `LEVEL_DENSITY_ANCHORS` are priors, not learned truth.
 - `src/mainote/dataset/`: `ingest`, `align`, `report`, `split`, `samples`, shared zip import (`zipimport.py`), portable `.maidb` export/import (`bundle.py`), and the stdlib AWMC-MaiArchive client (`wmc.py`).
 - `src/mainote/eval/metrics.py`: note-level comparison (onset F1, position/type, duration, slide endpoints).
-- `src/mainote/ml/`: P3 v0 tokenizer (strict grammar constraints for decoding), log-mel features, window dataset (LRU caches, overlong-window rejection), model (architecture v2), train loop (weighted window-normalized CE, per-class and note-level validation), constrained sampling/greedy decoder, inference. No auxiliary losses or candidate reranking yet.
+- `src/mainote/ml/`: P3 v0 tokenizer (strict grammar constraints for decoding), log-mel features, window dataset (LRU caches, overlong-window rejection), model (architecture v2), optional structured-token features (`token_features.py`; position/duration flags default off), train loop (weighted window-normalized CE, per-class and note-level validation, `--init-from` warm start), constrained sampling/greedy decoder, inference. No auxiliary losses or candidate reranking yet.
 - `configs/p3_base.yaml`: base training config.
 - `src/mainote/webapp/`: FastAPI app (`app.py`), dataset catalog/chart serialization (`catalog.py`), one-at-a-time subprocess jobs (`jobs.py`), zip dataset import (`datasets.py`), background online-catalogue import jobs (`wmc.py`), option/run scanners (`options.py`), path allow-listing (`settings.py`), training data selection/config overrides (`training.py`), torch-free model layer descriptions (`architecture.py`), MajdataView audio helpers (`viewer.py`), the vendored MajdataView WebGL build plus its bridge (`majdataview/`), and built frontend assets (`static/`).
 - `web/`: React 18 + MUI 6 + Vite + TypeScript frontend (`src/pages`, `src/components`, `src/api.ts`, `src/types.ts`). `npm run build` writes into `src/mainote/webapp/static/`.
