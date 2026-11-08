@@ -33,6 +33,8 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +46,7 @@ CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 CPU_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 DEFAULT_PIP_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 DEFAULT_PORT = 8765
+PROGRESS_INTERVAL = 10.0
 
 
 def log(message: str) -> None:
@@ -55,15 +58,58 @@ def run(
     *,
     capture: bool = False,
     check: bool = True,
+    label: str | None = None,
+    heartbeat: float = PROGRESS_INTERVAL,
 ) -> subprocess.CompletedProcess:
-    log("$ " + " ".join(str(part) for part in command))
-    return subprocess.run(
-        [str(part) for part in command],
-        cwd=str(REPO_ROOT),
-        check=check,
-        capture_output=capture,
-        text=True,
-    )
+    """Run a command, streaming its output and printing a periodic heartbeat."""
+    parts = [str(part) for part in command]
+    log("$ " + " ".join(parts))
+    if capture:
+        return subprocess.run(
+            parts,
+            cwd=str(REPO_ROOT),
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    started = time.monotonic()
+    if label:
+        log(f"开始: {label}")
+    process = subprocess.Popen(parts, cwd=str(REPO_ROOT), text=True)
+    stop = threading.Event()
+
+    def report() -> None:
+        while not stop.wait(max(heartbeat, 0.1)):
+            elapsed = time.monotonic() - started
+            log(f"进行中: {label or '命令'}（已用 {elapsed:.0f}s）")
+
+    thread = None
+    if label and heartbeat > 0:
+        thread = threading.Thread(target=report, daemon=True)
+        thread.start()
+    try:
+        returncode = process.wait()
+    except KeyboardInterrupt:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        raise
+    finally:
+        stop.set()
+        if thread is not None:
+            thread.join(timeout=1.0)
+
+    elapsed = time.monotonic() - started
+    if check and returncode != 0:
+        if label:
+            log(f"失败: {label}（退出码 {returncode}，{elapsed:.1f}s）")
+        raise subprocess.CalledProcessError(returncode, parts)
+    if label:
+        log(f"完成: {label}（{elapsed:.1f}s）")
+    return subprocess.CompletedProcess(parts, returncode)
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +190,7 @@ def ensure_virtualenv() -> None:
         python = choose_python()
         log(f"创建虚拟环境: {VENV_DIR}（{python}）")
         try:
-            run([python, "-m", "venv", str(VENV_DIR)])
+            run([python, "-m", "venv", str(VENV_DIR)], label="创建虚拟环境")
         except subprocess.CalledProcessError as exc:
             raise SystemExit(
                 "[setup] 创建虚拟环境失败。Debian/Ubuntu 请先安装："
@@ -247,7 +293,11 @@ def install_dependencies(args: argparse.Namespace, gpu: bool, info: dict | None)
 
     mirror_args = ["-i", args.pip_index] if args.pip_index else []
     log("升级 pip")
-    run([sys.executable, "-m", "pip", "install", "-U", "pip", *mirror_args])
+    run(
+        [sys.executable, "-m", "pip", "install", "-U", "pip", *mirror_args],
+        label="升级 pip",
+        heartbeat=args.progress_interval,
+    )
 
     action, reason = plan_torch(info, gpu)
     if action == "install":
@@ -263,7 +313,9 @@ def install_dependencies(args: argparse.Namespace, gpu: bool, info: dict | None)
                 f"torch=={args.torch_version}",
                 "--index-url",
                 index_url,
-            ]
+            ],
+            label=f"安装 PyTorch {args.torch_version}（{backend}）",
+            heartbeat=args.progress_interval,
         )
     elif action == "warn":
         log(f"警告: {reason}")
@@ -282,7 +334,9 @@ def install_dependencies(args: argparse.Namespace, gpu: bool, info: dict | None)
             "-r",
             str(requirements),
             *mirror_args,
-        ]
+        ],
+        label="安装 Web/音频/训练依赖（可能需要几分钟）",
+        heartbeat=args.progress_interval,
     )
 
 
@@ -402,6 +456,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cuda-index-url", default=CUDA_INDEX_URL)
     parser.add_argument("--cpu-index-url", default=CPU_INDEX_URL)
     parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=PROGRESS_INTERVAL,
+        help="长任务心跳间隔秒数；0 表示关闭（默认 10）",
+    )
+    parser.add_argument(
         "--pip-index",
         default=os.environ.get("MAINOTE_PIP_INDEX") or DEFAULT_PIP_INDEX,
         help=(
@@ -431,8 +491,18 @@ def ensure_ffmpeg(args: argparse.Namespace) -> bool:
         log("需要 root 或 sudo 才能安装 ffmpeg。")
         return False
     try:
-        run([*prefix, "apt-get", "update"], check=False)
-        run([*prefix, "apt-get", "install", "-y", "ffmpeg"], check=False)
+        run(
+            [*prefix, "apt-get", "update"],
+            check=False,
+            label="apt-get update",
+            heartbeat=args.progress_interval,
+        )
+        run(
+            [*prefix, "apt-get", "install", "-y", "ffmpeg"],
+            check=False,
+            label="安装 ffmpeg",
+            heartbeat=args.progress_interval,
+        )
     except OSError as exc:
         log(f"安装 ffmpeg 失败: {exc}")
         return False
@@ -443,12 +513,15 @@ def ensure_ffmpeg(args: argparse.Namespace) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    started = time.monotonic()
     if not sys.platform.startswith("linux"):
         raise SystemExit(
             "[setup] 此脚本只支持 Linux；PyTorch wheel 按 Linux CUDA 12.8/CPU 选择。"
         )
     if not 1 <= args.port <= 65535:
         raise SystemExit("[setup] --port 必须在 1-65535 之间。")
+    if args.progress_interval < 0:
+        raise SystemExit("[setup] --progress-interval 不能为负数。")
 
     ensure_virtualenv()
 
@@ -477,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
             log("安装计划: 无需安装 PyTorch")
         if not args.no_start:
             log(f"Web UI 计划端口: {find_free_port(args.host, args.port)}")
+        log(f"检测完成（{time.monotonic() - started:.1f}s）。")
         return 0
 
     if not args.skip_install:
@@ -490,8 +564,12 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.no_start:
-        log("已跳过 Web UI 启动（--no-start）。")
+        log(
+            "已跳过 Web UI 启动（--no-start）；"
+            f"总用时 {time.monotonic() - started:.1f}s。"
+        )
         return 0
+    log(f"环境准备完成（{time.monotonic() - started:.1f}s），启动 Web UI ...")
     return start_webui(args)
 
 
