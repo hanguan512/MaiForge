@@ -320,6 +320,7 @@ def import_bundle(
     filename: str | None = None,
     align: bool = False,
     staging_root: Path | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Import every song of a ``.maidb`` archive.
 
@@ -357,11 +358,26 @@ def import_bundle(
             align=align,
             staging_root=staging_root,
             result=result,
+            progress=progress,
         )
     except Exception as exc:  # noqa: BLE001 - report bundle-level failures
         result["ok"] = False
         result["errors"].append(str(exc))
     return result
+
+
+def _emit_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    *,
+    phase: str,
+    done: int,
+    total: int,
+    song_id: str | None,
+) -> None:
+    if callback is not None:
+        callback(
+            {"phase": phase, "done": done, "total": total, "song_id": song_id}
+        )
 
 
 def _import_bundle_locked(
@@ -373,9 +389,11 @@ def _import_bundle_locked(
     align: bool,
     staging_root: Path | None,
     result: dict[str, Any],
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     with zipfile.ZipFile(source) as archive:
         members = validate_members(archive)
+        _emit_progress(progress, phase="extract", done=0, total=0, song_id=None)
         staging_parent = str(staging_root) if staging_root is not None else None
         with tempfile.TemporaryDirectory(
             prefix="mainote_bundle_", dir=staging_parent
@@ -385,7 +403,15 @@ def _import_bundle_locked(
 
             manifest_path = _manifest_path(staging)
             if manifest_path is None:
+                _emit_progress(progress, phase="songs", done=0, total=1, song_id=None)
                 _import_manifestless(staging, filename, raw_root, processed_root, align, result)
+                _emit_progress(
+                    progress,
+                    phase="songs",
+                    done=1,
+                    total=1,
+                    song_id=Path(filename).stem,
+                )
                 return
             base = manifest_path.parent
             try:
@@ -396,17 +422,35 @@ def _import_bundle_locked(
                 raise ValueError(f"maidb.json 不是合法 JSON: {exc}") from exc
             result["version"] = manifest["version"]
 
+            total_songs = len(manifest["songs"])
+            _emit_progress(
+                progress, phase="songs", done=0, total=total_songs, song_id=None
+            )
             batch_ids: set[str] = set()
             for position, entry in enumerate(manifest["songs"]):
                 if not isinstance(entry, dict):
                     result["results"].append(
                         _failed_song(filename, f"song_{position + 1}", "清单条目不是对象")
                     )
+                    _emit_progress(
+                        progress,
+                        phase="songs",
+                        done=position + 1,
+                        total=total_songs,
+                        song_id=None,
+                    )
                     continue
                 entry_id = entry.get("id")
                 if not isinstance(entry_id, str) or not entry_id.strip():
                     entry_id = f"song_{position + 1}"
                 entry_id = entry_id.strip()
+                _emit_progress(
+                    progress,
+                    phase="songs",
+                    done=position,
+                    total=total_songs,
+                    song_id=entry_id,
+                )
                 try:
                     song_dir = _manifest_song_dir(base, entry.get("dir", "."), entry_id)
                     _verify_manifest_files(song_dir, entry, entry_id)
@@ -426,6 +470,13 @@ def _import_bundle_locked(
                 except Exception as exc:  # noqa: BLE001 - one bad song must not stop the bundle
                     song = _failed_song(filename, entry_id, str(exc))
                 result["results"].append(song)
+                _emit_progress(
+                    progress,
+                    phase="songs",
+                    done=position + 1,
+                    total=total_songs,
+                    song_id=entry_id,
+                )
 
             imported = sum(1 for song in result["results"] if song.get("ok"))
             failed = len(result["results"]) - imported

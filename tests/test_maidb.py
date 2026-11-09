@@ -111,6 +111,35 @@ class TestMaidbExportImport(unittest.TestCase):
                 [song["song_id"] for song in result["results"]], ["song_a", "song_b"]
             )
 
+    def test_import_reports_bundle_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            raw = tmp / "raw"
+            _write_raw(raw, "song_a", MAIDATA_A)
+            _write_raw(raw, "song_b", MAIDATA_B, audio=None)
+            bundle = tmp / "corpus.maidb"
+            export_bundle(
+                [("song_a", raw / "song_a"), ("song_b", raw / "song_b")], bundle
+            )
+
+            events: list[dict] = []
+            result = import_bundle(
+                bundle,
+                raw_root=tmp / "imported" / "raw",
+                processed_root=tmp / "imported" / "processed",
+                progress=events.append,
+            )
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(events[0]["phase"], "extract")
+            songs = [event for event in events if event["phase"] == "songs"]
+            self.assertEqual(songs[0]["done"], 0)
+            self.assertEqual(songs[0]["total"], 2)
+            self.assertEqual(songs[-1]["done"], 2)
+            self.assertEqual(
+                {event["song_id"] for event in songs if event["song_id"]},
+                {"song_a", "song_b"},
+            )
+
     def test_import_duplicate_ids_get_suffix(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

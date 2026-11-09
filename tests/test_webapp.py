@@ -728,6 +728,46 @@ class WebAppTest(unittest.TestCase):
         self.assertFalse(results[2]["ok"])
         self.assertTrue(any("zip" in error for error in results[2]["errors"]))
 
+    def test_dataset_import_job_reports_progress(self):
+        payload = _zip_bytes(
+            {
+                "track.mp3": b"fake-audio",
+                "maidata.txt": MAIDATA_TEXT.encode("utf-8"),
+            }
+        )
+        response = self.client.post(
+            "/api/datasets/import-jobs",
+            files=[("files", ("progressive.zip", payload, "application/zip"))],
+        )
+        self.assertEqual(response.status_code, 200)
+        job = response.json()
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(job["total_files"], 1)
+
+        deadline = time.time() + 20
+        while job["status"] == "running" and time.time() < deadline:
+            time.sleep(0.05)
+            polled = self.client.get(f"/api/datasets/import-jobs/{job['id']}")
+            self.assertEqual(polled.status_code, 200)
+            job = polled.json()
+
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["completed_files"], 1)
+        self.assertEqual(job["progress"], 1.0)
+        self.assertEqual(len(job["results"]), 1)
+        self.assertTrue(job["results"][0]["ok"], job["results"][0])
+        self.assertEqual(job["results"][0]["song_id"], "progressive")
+
+        jobs = self.client.get("/api/datasets/import-jobs").json()["jobs"]
+        self.assertTrue(any(item["id"] == job["id"] for item in jobs))
+        self.assertEqual(
+            self.client.get("/api/datasets/import-jobs/does-not-exist").status_code,
+            400,
+        )
+        self.assertTrue(
+            (self.repo / "data" / "processed" / "progressive" / "meta.json").is_file()
+        )
+
     def test_dataset_export_and_bundle_reimport(self):
         payload = _zip_bytes(
             {

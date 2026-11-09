@@ -330,6 +330,28 @@ export interface DatasetImportResponse {
   results: DatasetImportItem[];
 }
 
+export interface DatasetImportJob {
+  id: string;
+  status: "running" | "done";
+  align: boolean;
+  total_files: number;
+  completed_files: number;
+  current: string | null;
+  phase: "extract" | "songs" | null;
+  current_song: string | null;
+  songs_done: number;
+  songs_total: number;
+  progress: number;
+  results: DatasetImportItem[];
+  error: string | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface DatasetImportJobsResponse {
+  jobs: DatasetImportJob[];
+}
+
 export interface DatasetExportSong {
   id: string;
   title: string;

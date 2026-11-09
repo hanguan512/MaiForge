@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import shutil
 import tempfile
 import threading
 import time
@@ -20,7 +21,8 @@ from ..audio.io import AUDIO_EXTENSIONS
 from ..dataset.wmc import WmcError
 from .architecture import describe_architecture
 from .catalog import Catalog
-from .datasets import MAX_ARCHIVE_BYTES, DatasetImporter
+from .datasets import MAX_ARCHIVE_BYTES, DatasetImporter, failed_import
+from .importjobs import DatasetImportJobs
 from .jobs import JobManager
 from .options import (
     list_audio,
@@ -41,27 +43,12 @@ TEXT_EXTENSIONS = {".txt", ".json", ".jsonl", ".yaml", ".yml", ".log", ".md", ".
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
 
-def _failed_import(name: str, message: str) -> dict[str, Any]:
-    return {
-        "file": name,
-        "ok": False,
-        "song_id": None,
-        "title": None,
-        "artist": None,
-        "chart_count": 0,
-        "has_audio": False,
-        "raw": None,
-        "processed": None,
-        "warnings": [],
-        "errors": [message],
-    }
-
-
 def create_app(settings: WebSettings | None = None) -> FastAPI:
     settings = settings or WebSettings()
     catalog = Catalog(settings)
     manager = JobManager(settings)
     importer = DatasetImporter(settings)
+    import_jobs = DatasetImportJobs(settings, importer)
     wmc = WmcService(settings, importer)
 
     app = FastAPI(
@@ -73,6 +60,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     app.state.catalog = catalog
     app.state.manager = manager
     app.state.importer = importer
+    app.state.import_jobs = import_jobs
     app.state.wmc = wmc
 
     app.add_middleware(
@@ -211,7 +199,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             for position, upload in enumerate(files):
                 name = Path(upload.filename or f"dataset_{position}.zip").name
                 if Path(name).suffix.lower() not in {".zip", ".maidb"}:
-                    results.append(_failed_import(name, "只支持 .zip 或 .maidb"))
+                    results.append(failed_import(name, "只支持 .zip 或 .maidb"))
                     await upload.close()
                     continue
                 target = tmp_dir / f"{position:03d}_{name}"
@@ -232,7 +220,7 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 - keep the batch going
-                    results.append(_failed_import(name, str(exc)))
+                    results.append(failed_import(name, str(exc)))
                 finally:
                     await upload.close()
         return {
@@ -240,6 +228,55 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
             "align": align,
             "results": results,
         }
+
+    @app.post("/api/datasets/import-jobs")
+    async def api_dataset_import_job_start(
+        files: list[UploadFile] = File(...),
+        align: bool = Form(False),
+    ) -> dict[str, Any]:
+        if not files:
+            raise ValueError("请选择至少一个压缩包")
+        job_id, workspace = import_jobs.new_workspace()
+        saved: list[tuple[str, Path]] = []
+        try:
+            for position, upload in enumerate(files):
+                name = Path(upload.filename or f"dataset_{position}.zip").name
+                if Path(name).suffix.lower() not in {".zip", ".maidb"}:
+                    raise ValueError(f"{name}: 只支持 .zip 或 .maidb")
+                target = workspace / f"{position:03d}_{name}"
+                total = 0
+                try:
+                    with target.open("wb") as handle:
+                        while chunk := await upload.read(1024 * 1024):
+                            total += len(chunk)
+                            if total > MAX_ARCHIVE_BYTES:
+                                raise ValueError(f"{name}: 压缩包过大(上限 1 GB)")
+                            handle.write(chunk)
+                finally:
+                    await upload.close()
+                saved.append((name, target))
+            return import_jobs.start(
+                job_id, saved, align=align, workspace=workspace
+            )
+        except Exception:
+            for upload in files:
+                try:
+                    await upload.close()
+                except Exception:  # noqa: BLE001 - already closed in the loop
+                    pass
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise
+
+    @app.get("/api/datasets/import-jobs")
+    def api_dataset_import_jobs() -> dict[str, Any]:
+        return {"jobs": import_jobs.snapshots()}
+
+    @app.get("/api/datasets/import-jobs/{job_id}")
+    def api_dataset_import_job(job_id: str) -> dict[str, Any]:
+        job = import_jobs.snapshot(job_id)
+        if job is None:
+            raise ValueError("导入任务不存在")
+        return job
 
     # -- online catalogue (AWMC-MaiArchive) ------------------------------
     @app.get("/api/wmc/search")

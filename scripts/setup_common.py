@@ -16,6 +16,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from pathlib import Path
@@ -435,8 +436,107 @@ def requirements_status(
 # dependency installation
 
 
+def pip_status() -> tuple[bool, str]:
+    """Return whether the venv's pip can run, plus a short diagnostic."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if result.returncode == 0:
+        return True, result.stdout.strip() or "pip"
+    lines = (result.stderr or result.stdout or "").strip().splitlines()
+    return False, lines[-1] if lines else f"退出码 {result.returncode}"
+
+
+def _run_ensurepip() -> tuple[bool, str]:
+    result = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True, result.stdout.strip()
+    lines = (result.stderr or result.stdout or "").strip().splitlines()
+    return False, lines[-1] if lines else f"退出码 {result.returncode}"
+
+
+def _pip_artifacts() -> list[Path]:
+    """Return the installed ``pip`` package and dist-info directories."""
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    paths: list[Path] = []
+    package = purelib / "pip"
+    if package.exists():
+        paths.append(package)
+    paths.extend(sorted(purelib.glob("pip-*.dist-info")))
+    return paths
+
+
+def ensure_pip(platform: str) -> None:
+    """Self-heal a broken pip inside the venv before any install commands.
+
+    A venv copied between machines, an interrupted ``pip install -U pip`` or a
+    full disk can leave pip unable to import its vendored packages. In that
+    state ``python -m pip install ...`` fails immediately, so bootstrap the
+    bundled pip wheel with ``ensurepip`` first. If the stale dist-info makes
+    ``ensurepip`` skip the reinstall, move the broken package aside to force a
+    clean bootstrap, restoring it if the repair fails.
+    """
+    healthy, detail = pip_status()
+    if healthy:
+        return
+    log(f"虚拟环境内的 pip 不可用（{detail}），尝试用 ensurepip 修复 ...")
+    ok, error = _run_ensurepip()
+    healthy, repaired = pip_status()
+    if healthy:
+        log(f"pip 已修复: {repaired}")
+        return
+
+    log("ensurepip 未能替换现有 pip，改为强制重新安装 ...")
+    backup = Path(sys.prefix) / ".mainote-pip-backup"
+    moved: list[tuple[Path, Path]] = []
+    success = False
+    try:
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        backup.mkdir(parents=True)
+        for source in _pip_artifacts():
+            target = backup / source.name
+            shutil.move(str(source), str(target))
+            moved.append((source, target))
+        ok, error = _run_ensurepip()
+        healthy, repaired = pip_status()
+        success = healthy
+    except OSError as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    finally:
+        if not success:
+            for source, target in moved:
+                if target.exists() and not source.exists():
+                    shutil.move(str(target), str(source))
+        shutil.rmtree(backup, ignore_errors=True)
+
+    if success:
+        log(f"pip 已修复: {repaired}")
+        return
+
+    if platform == "win":
+        hint = "请删除 .venv 后重新运行 scripts\\setup_win.py。"
+    else:
+        hint = "请删除 .venv 后重新运行 scripts/setup_linux.py。"
+    raise SystemExit(f"[setup] pip 修复失败：{error}。{hint}")
+
+
 def install_dependencies(
     args: argparse.Namespace,
+    *,
+    platform: str,
     gpu: bool,
     info: dict | None,
     fingerprint: str,
@@ -449,6 +549,8 @@ def install_dependencies(
 
     mirror_args = ["-i", args.pip_index] if args.pip_index else []
     action, reason = plan_torch(info, gpu)
+    if action == "install" or args.force_install or not deps_ready:
+        ensure_pip(platform)
     if action == "install":
         index_url = args.cuda_index_url if gpu else args.cpu_index_url
         backend = "CUDA 12.8" if gpu else "CPU"
@@ -838,11 +940,12 @@ def main(
     if not args.skip_install:
         install_dependencies(
             args,
-            gpu,
-            info,
-            fingerprint,
-            bool(deps_ready),
-            deps_detail,
+            platform=platform,
+            gpu=gpu,
+            info=info,
+            fingerprint=fingerprint,
+            deps_ready=bool(deps_ready),
+            deps_detail=deps_detail,
         )
         info = torch_info()
         if info is not None:

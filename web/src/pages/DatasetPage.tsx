@@ -28,7 +28,7 @@ import {
 } from "@mui/icons-material";
 import { alpha, useTheme } from "@mui/material/styles";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, formatError, postJson } from "../api";
+import { api, formatError, postJson, uploadForm } from "../api";
 import DifficultyChip from "../components/DifficultyChip";
 import Jacket from "../components/Jacket";
 import OnlineCatalogue from "../components/OnlineCatalogue";
@@ -39,7 +39,8 @@ import { accentFor, PALETTE } from "../theme";
 import type {
   DatasetExportResponse,
   DatasetImportItem,
-  DatasetImportResponse,
+  DatasetImportJob,
+  DatasetImportJobsResponse,
   DatasetSong,
   DatasetSummary,
   JobSnapshot,
@@ -204,6 +205,8 @@ export default function DatasetPage() {
   const [align, setAlign] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [uploadFraction, setUploadFraction] = useState<number | null>(null);
+  const [importJob, setImportJob] = useState<DatasetImportJob | null>(null);
   const [results, setResults] = useState<DatasetImportItem[] | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [prepareNote, setPrepareNote] = useState<string | null>(null);
@@ -229,6 +232,18 @@ export default function DatasetPage() {
 
   useEffect(() => {
     void load();
+    void (async () => {
+      try {
+        const response = await api<DatasetImportJobsResponse>("/api/datasets/import-jobs");
+        const active = response.jobs.find((item) => item.status === "running");
+        if (active) {
+          setImportJob(active);
+          setImporting(true);
+        }
+      } catch {
+        // Progress restoration is optional; direct imports still work.
+      }
+    })();
     return () => {
       if (prepareTimer.current !== null) {
         window.clearInterval(prepareTimer.current);
@@ -236,6 +251,37 @@ export default function DatasetPage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!importJob || importJob.status !== "running") return undefined;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const next = await api<DatasetImportJob>(
+            `/api/datasets/import-jobs/${importJob.id}`,
+          );
+          if (stopped) return;
+          setImportJob(next);
+          setResults(next.results.length ? next.results : null);
+          if (next.status === "done") {
+            window.clearInterval(timer);
+            setImporting(false);
+            setUploadFraction(null);
+            setFiles([]);
+            if (next.error) setError(next.error);
+            await load();
+          }
+        } catch (caught) {
+          if (!stopped) setError(formatError(caught));
+        }
+      })();
+    }, 900);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [importJob?.id, importJob?.status]);
 
   const setTab = (next: TabKey) => {
     const updated = new URLSearchParams(params);
@@ -425,26 +471,56 @@ export default function DatasetPage() {
     setImporting(true);
     setError(null);
     setResults(null);
+    setImportJob(null);
+    setUploadFraction(0);
     try {
       const body = new FormData();
       files.forEach((file) => body.append("files", file));
       body.append("align", align ? "true" : "false");
-      const response = await api<DatasetImportResponse>("/api/datasets/import", {
-        method: "POST",
+      const created = await uploadForm<DatasetImportJob>(
+        "/api/datasets/import-jobs",
         body,
-      });
-      setResults(response.results);
-      setFiles([]);
-      await load();
+        setUploadFraction,
+      );
+      setImportJob(created);
+      setUploadFraction(null);
+      if (created.status === "done") {
+        setResults(created.results);
+        setFiles([]);
+        setImporting(false);
+        await load();
+      }
     } catch (caught) {
       setError(formatError(caught));
-    } finally {
       setImporting(false);
+      setUploadFraction(null);
     }
   };
 
   const successes = results?.filter((item) => item.ok).length ?? 0;
   const failures = (results?.length ?? 0) - successes;
+  const uploadPercent =
+    uploadFraction === null ? null : Math.round(uploadFraction * 100);
+  const runningJob = importJob?.status === "running" ? importJob : null;
+  const progressValue = runningJob
+    ? Math.min(100, Math.max(0, runningJob.progress * 100))
+    : uploadPercent;
+  const progressLabel = runningJob
+    ? [
+        `文件 ${runningJob.completed_files}/${runningJob.total_files}`,
+        runningJob.current,
+        runningJob.songs_total
+          ? `歌曲 ${runningJob.songs_done}/${runningJob.songs_total}`
+          : runningJob.phase === "extract"
+            ? "解压中"
+            : null,
+        runningJob.current_song,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : uploadPercent !== null
+      ? `上传中 ${uploadPercent}%`
+      : "正在上传…";
 
   return (
     <Stack spacing={3}>
@@ -796,14 +872,32 @@ export default function DatasetPage() {
               onClick={() => void upload()}
             >
               {importing
-                ? "正在导入…"
+                ? progressValue !== null
+                  ? `${runningJob ? "正在导入" : "正在上传"} ${Math.round(progressValue)}%`
+                  : runningJob
+                    ? "正在导入…"
+                    : "正在上传…"
                 : files.length
                   ? `导入 ${files.length} 个文件`
                   : "导入压缩包 / 数据集"}
             </Button>
           </Stack>
 
-          {importing ? <LinearProgress sx={{ mt: 2 }} /> : null}
+          {importing ? (
+            <Box sx={{ mt: 2 }}>
+              <LinearProgress
+                variant={progressValue === null ? "indeterminate" : "determinate"}
+                value={progressValue ?? 0}
+              />
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.75, wordBreak: "break-all" }}
+              >
+                {progressLabel}
+              </Typography>
+            </Box>
+          ) : null}
 
           {results ? (
             <Box sx={{ mt: 2.5 }}>

@@ -48,7 +48,7 @@ MaiForge 会先把音频转换成结构化的事件 IR，再确定性地编译�
 
 > 想在 Jupyter 里直接操作，可以打开 [`notebooks/quickstart_linux.ipynb`](notebooks/quickstart_linux.ipynb)：按顺序运行单元格即可完成安装依赖、启动 Web UI、健康检查和停止服务（Linux）。
 >
-> Linux 一键启动：`python3 scripts/setup_linux.py`（`python3 scripts/setup.py` 会根据系统自动选择脚本；Windows 用 `python scripts\setup_win.py`）。脚本会复用或创建 `.venv`、检测 NVIDIA GPU，按需安装 Linux 版 PyTorch（GPU 用 CUDA 12.8 wheel，CPU 用 CPU wheel）和 `requirements-train.txt`，然后启动 Web UI 并打印端口。普通依赖默认从清华 PyPI 镜像安装（`--pip-index` 可覆盖），PyTorch 始终走官方 wheel 索引；安装期间每 10 秒打印一次进度心跳（`--progress-interval` 可调）。依赖已就绪时直接跳过 pip（状态记录在 `.venv/.mainote_setup_state.json`，依赖清单或 Python 版本变化才重装），`--force-install` 可强制重装。`--check` 只检测环境，不安装、不启动。
+> Linux 一键启动：`python3 scripts/setup_linux.py`（`python3 scripts/setup.py` 会根据系统自动选择脚本；Windows 用 `python scripts\setup_win.py`）。脚本会复用或创建 `.venv`、检测 NVIDIA GPU，按需安装 Linux 版 PyTorch（GPU 用 CUDA 12.8 wheel，CPU 用 CPU wheel）和 `requirements-train.txt`，然后启动 Web UI 并打印端口。普通依赖默认从清华 PyPI 镜像安装（`--pip-index` 可覆盖），PyTorch 始终走官方 wheel 索引；安装期间每 10 秒打印一次进度心跳（`--progress-interval` 可调）。依赖已就绪时直接跳过 pip（状态记录在 `.venv/.mainote_setup_state.json`，依赖清单或 Python 版本变化才重装），`--force-install` 可强制重装。`.venv` 内的 pip 损坏时（例如 `No module named 'pip._vendor.packaging'`），脚本会先用 `ensurepip` 自修复，仍失败才提示删除 `.venv` 重建。`--check` 只检测环境，不安装、不启动。
 
 ### 0. 环境要求
 
@@ -257,7 +257,8 @@ python -m pip install -r requirements-train.txt
 - **数据集管理：** 从 AWMC-MaiArchive（`download.wmc.pub`）在线检索、批量下载并入库谱面；
   也可以批量导入本地 zip（一个压缩包 = 一首歌，内含 `track.mp3` 与 `maidata`）或
   `.maidb` 数据集（可包含多首）。勾选歌曲后可一键导出 `.maidb`，下载后可直接在另一台
-  机器批量导入。导入会自动消毒歌名、避免覆盖已有数据，并写入 `data/raw/<song_id>/` + `data/processed/`。
+  机器批量导入。导入时会显示上传百分比，以及每个压缩包和 `.maidb` 内每首歌的处理进度；
+  导入会自动消毒歌名、避免覆盖已有数据，并写入 `data/raw/<song_id>/` + `data/processed/`。
   已入库列表会显示每首歌的样本/log-mel 特征状态，可一键为缺失歌曲补全
   （`mainote ml prepare-data`），单曲也可以点行内按钮补齐。
 - **浏览：** 扫描 `data/processed`、`out/demo/processed` 等数据目录，查看歌曲、

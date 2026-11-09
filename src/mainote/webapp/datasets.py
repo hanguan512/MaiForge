@@ -17,7 +17,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from ..dataset.bundle import (
@@ -35,6 +35,23 @@ from ..maidata.stats import DIFFICULTY_BY_INDEX
 from .catalog import BACKGROUND_NAMES
 from .settings import WebSettings
 from .training import training_catalog
+
+
+def failed_import(name: str, message: str) -> dict[str, Any]:
+    """Result shape for an archive that failed validation before ingestion."""
+    return {
+        "file": name,
+        "ok": False,
+        "song_id": None,
+        "title": None,
+        "artist": None,
+        "chart_count": 0,
+        "has_audio": False,
+        "raw": None,
+        "processed": None,
+        "warnings": [],
+        "errors": [message],
+    }
 
 
 def _read_json(path: Path, default: Any = None) -> Any:
@@ -149,13 +166,16 @@ class DatasetImporter:
         *,
         filename: str | None = None,
         align: bool = False,
+        progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         name = filename or source.name
         suffix = Path(name).suffix.lower()
         if suffix == ".zip":
             return self.import_zip(source, filename=name, align=align)
         if suffix == BUNDLE_SUFFIX:
-            return self.import_bundle(source, filename=name, align=align)
+            return self.import_bundle(
+                source, filename=name, align=align, progress=progress
+            )
         raise ValueError("只支持 .zip 单曲压缩包或 .maidb 数据集")
 
     def import_zip(
@@ -186,6 +206,7 @@ class DatasetImporter:
         *,
         filename: str | None = None,
         align: bool = False,
+        progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             result = import_bundle(
@@ -195,6 +216,7 @@ class DatasetImporter:
                 filename=filename,
                 align=align,
                 staging_root=self._staging_root(),
+                progress=progress,
             )
         for song in result.get("results") or []:
             if song.get("raw"):
