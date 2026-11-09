@@ -160,6 +160,18 @@ def evaluate_chart(
                     set(ref_stats["ratios"]) | set(pred_stats["ratios"])
                 )
             },
+            # Raw counts let callers aggregate a distribution over many
+            # windows instead of averaging ratios, which over-weights windows
+            # with very few events.
+            "type_counts": {
+                kind: {
+                    "reference": int(ref_stats["counts"].get(kind, 0)),
+                    "predicted": int(pred_stats["counts"].get(kind, 0)),
+                }
+                for kind in sorted(
+                    set(ref_stats["counts"]) | set(pred_stats["counts"])
+                )
+            },
         },
         # A separate chord block so callers can select checkpoints on a
         # two-hand constraint without parsing the generic simultaneous stats.

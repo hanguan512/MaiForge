@@ -16,6 +16,9 @@ data:
   chart_cache_size: 512
   feature_cache_size: 64
   min_alignment: 0.0
+  # Same-tick events used to be tokenized in kind-alphabetical order (slides
+  # before taps); shuffle each window deterministically to remove that cue.
+  shuffle_same_tick_events: true
   spec_augment:
     prob: 0.5
     freq_mask: 8
@@ -72,3 +75,6 @@ train:
     max_new_tokens: 2048
     temperature: 0.0
     tolerance_seconds: 0.06
+    # Include the predicted/reference event-type distribution in note_score;
+    # type-only accuracy misses a model that over-generates one kind.
+    type_ratio_weight: 1.0

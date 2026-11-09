@@ -100,6 +100,76 @@ def load_init_weights(
     return sorted(missing)
 
 
+# Structured-token feature projections are the only parameters that differ
+# between a baseline checkpoint and its --init-from continuation.
+_STRUCTURED_FEATURE_PREFIXES = ("position_proj.", "duration_proj.")
+
+
+def build_optimizer(
+    model,
+    train_cfg: dict[str, Any],
+    *,
+    warm_start: bool = False,
+) -> torch.optim.Optimizer:
+    """AdamW with separate learning rates for warm starts and feature tables.
+
+    ``--init-from`` continues a model that already learned the dataset's type
+    prior.  A single LR lets that prior drift for hundreds of steps while the
+    zero-initialized ``position_proj``/``duration_proj`` matrices are still
+    near zero; the 2026-11-09 posdur run collapsed into slides under exactly
+    that setup.  ``warm_start_lr_scale`` keeps the backbone near the
+    checkpoint and ``feature_lr_multiplier`` lets the new projections catch
+    up.  The feature group has no weight decay so it can grow away from zero
+    without regularization fighting it.
+    """
+    lr = float(train_cfg.get("lr", 3e-4))
+    weight_decay = float(train_cfg.get("weight_decay", 0.01))
+    backbone_scale = (
+        float(train_cfg.get("warm_start_lr_scale", 0.1))
+        if warm_start
+        else 1.0
+    )
+    feature_scale = float(train_cfg.get("feature_lr_multiplier", 1.0))
+    if lr <= 0:
+        raise ValueError("train.lr must be positive")
+    if backbone_scale <= 0 or feature_scale <= 0:
+        raise ValueError(
+            "train.warm_start_lr_scale and train.feature_lr_multiplier "
+            "must be positive"
+        )
+    backbone: list[Any] = []
+    features: list[Any] = []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if name.startswith(_STRUCTURED_FEATURE_PREFIXES):
+            features.append(parameter)
+        else:
+            backbone.append(parameter)
+    groups: list[dict[str, Any]] = []
+    if backbone:
+        groups.append(
+            {
+                "params": backbone,
+                "lr": lr * backbone_scale,
+                "weight_decay": weight_decay,
+                "name": "backbone",
+            }
+        )
+    if features:
+        groups.append(
+            {
+                "params": features,
+                "lr": lr * feature_scale,
+                "weight_decay": 0.0,
+                "name": "structured_features",
+            }
+        )
+    if not groups:
+        raise ValueError("model has no trainable parameters")
+    return torch.optim.AdamW(groups)
+
+
 def build_loader(
     dataset: ChartWindowDataset,
     *,
@@ -272,6 +342,9 @@ def train(args: argparse.Namespace) -> int:
     cache_kwargs = {
         "chart_cache_size": int(data_cfg.get("chart_cache_size", 512)),
         "feature_cache_size": int(data_cfg.get("feature_cache_size", 64)),
+        "shuffle_same_tick_events": bool(
+            data_cfg.get("shuffle_same_tick_events", False)
+        ),
     }
 
     train_dataset = ChartWindowDataset(
@@ -357,11 +430,7 @@ def train(args: argparse.Namespace) -> int:
         pad_id=vocab.pad_id,
         vocab_tokens=vocab.tokens,
     ).to(device)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(train_cfg.get("lr", 3e-4)),
-        weight_decay=float(train_cfg.get("weight_decay", 0.01)),
-    )
+    optimizer = build_optimizer(model, train_cfg, warm_start=bool(init_from))
     grad_accum = max(1, int(train_cfg.get("grad_accum", 1)))
     max_steps = int(args.max_steps or train_cfg.get("max_steps") or 0)
     epochs = int(train_cfg.get("epochs", 30))
@@ -419,6 +488,7 @@ def train(args: argparse.Namespace) -> int:
         "type_accuracy",
         "exact_accuracy",
         "slide_endpoint_accuracy",
+        "type_ratio_score",
     }
     if checkpoint_metric != "val_loss" and checkpoint_metric not in note_metrics:
         raise ValueError(
@@ -451,7 +521,15 @@ def train(args: argparse.Namespace) -> int:
                 "older checkpoints; retrain or use the matching config."
             )
         model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        try:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        except ValueError as exc:
+            raise RuntimeError(
+                "checkpoint optimizer state has a different parameter-group "
+                "layout (structured-feature/warm-start LRs are newer than "
+                "this checkpoint); continue from it with --init-from instead "
+                "of --resume, or start a fresh run."
+            ) from exc
         if "scheduler" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler"])
         if "scaler" in checkpoint and checkpoint["scaler"]:
@@ -484,6 +562,19 @@ def train(args: argparse.Namespace) -> int:
                 "params": model.parameter_count(),
                 "batch_size": batch_size,
                 "grad_accum": grad_accum,
+                # Log the configured base LRs, not the post-scheduler values
+                # (LambdaLR applies the step-0 warmup factor at construction).
+                "lr_groups": [
+                    {
+                        "name": group.get("name"),
+                        "lr": base_lr,
+                        "weight_decay": group["weight_decay"],
+                    }
+                    for group, base_lr in zip(
+                        optimizer.param_groups, scheduler.base_lrs
+                    )
+                ],
+                "shuffle_same_tick_events": train_dataset.shuffle_same_tick_events,
                 "total_steps": total_steps,
                 "warmup": warmup,
                 "warmup_clamped_from": warmup_clamped_from,
@@ -591,25 +682,26 @@ def train(args: argparse.Namespace) -> int:
                 scheduler.step()
                 global_step += 1
                 if global_step % log_every == 0:
-                    lr = optimizer.param_groups[0]["lr"]
-                    print(
-                        json.dumps(
-                            {
-                                "epoch": epoch,
-                                "step": global_step,
-                                "train_loss": round(
-                                    train_loss / max(1, train_loss_windows), 4
-                                ),
-                                "train_token_ce": round(
-                                    train_token_loss / max(1, train_tokens), 4
-                                ),
-                                "train_acc": round(
-                                    train_correct / max(1, train_tokens), 4
-                                ),
-                                "lr": round(lr, 8),
-                            },
-                            ensure_ascii=False,
+                    record: dict[str, Any] = {
+                        "epoch": epoch,
+                        "step": global_step,
+                        "train_loss": round(
+                            train_loss / max(1, train_loss_windows), 4
                         ),
+                        "train_token_ce": round(
+                            train_token_loss / max(1, train_tokens), 4
+                        ),
+                        "train_acc": round(
+                            train_correct / max(1, train_tokens), 4
+                        ),
+                        "lr": round(optimizer.param_groups[0]["lr"], 8),
+                    }
+                    if len(optimizer.param_groups) > 1:
+                        record["lr_feature"] = round(
+                            optimizer.param_groups[1]["lr"], 8
+                        )
+                    print(
+                        json.dumps(record, ensure_ascii=False),
                         flush=True,
                     )
                 if max_steps and global_step >= max_steps:
@@ -654,6 +746,9 @@ def train(args: argparse.Namespace) -> int:
                     top_k=note_eval_cfg.get("top_k"),
                     tolerance_seconds=float(
                         note_eval_cfg.get("tolerance_seconds", 0.06)
+                    ),
+                    type_ratio_weight=float(
+                        note_eval_cfg.get("type_ratio_weight", 1.0)
                     ),
                     seed=int(note_eval_cfg.get("seed", 0)),
                 )
@@ -851,6 +946,7 @@ def evaluate_note_level(
     temperature: float = 0.0,
     top_k: int | None = None,
     tolerance_seconds: float = 0.06,
+    type_ratio_weight: float = 1.0,
     seed: int = 0,
 ) -> dict[str, Any] | None:
     """Decode a few validation windows and compare notes to the reference.
@@ -997,7 +1093,11 @@ def evaluate_note_level(
             ),
             flush=True,
         )
-    return _aggregate_note_results(results, decode_errors)
+    return _aggregate_note_results(
+        results,
+        decode_errors,
+        type_ratio_weight=type_ratio_weight,
+    )
 
 
 def _decode_budget(reference_tokens: int, configured: int) -> int:
@@ -1057,6 +1157,8 @@ def _window_chart(
 def _aggregate_note_results(
     results: list[dict[str, Any]],
     decode_errors: int,
+    *,
+    type_ratio_weight: float = 1.0,
 ) -> dict[str, Any] | None:
     if not results:
         return None
@@ -1110,10 +1212,67 @@ def _aggregate_note_results(
         if slide_matched
         else None
     )
-    components = [f1, position, type_accuracy]
+    # Type distribution over matched windows, aggregated from raw counts.
+    # `type_accuracy` only checks the label of an already-matched note; it
+    # cannot see a run that writes 51% slides against a 14% reference, which
+    # is why the slide-collapsed posdur checkpoint still scored well.  The
+    # total-variation score closes that blind spot.
+    ref_type_counts: dict[str, int] = {}
+    pred_type_counts: dict[str, int] = {}
+    for r in results:
+        for kind, counts in (r["stats"].get("type_counts") or {}).items():
+            ref_type_counts[kind] = ref_type_counts.get(kind, 0) + int(
+                counts.get("reference", 0)
+            )
+            pred_type_counts[kind] = pred_type_counts.get(kind, 0) + int(
+                counts.get("predicted", 0)
+            )
+    type_kinds = sorted(set(ref_type_counts) | set(pred_type_counts))
+    ref_type_total = sum(ref_type_counts.values())
+    pred_type_total = sum(pred_type_counts.values())
+    type_ratios = {
+        kind: {
+            "reference": round(ref_type_counts.get(kind, 0) / ref_type_total, 4)
+            if ref_type_total
+            else 0.0,
+            "predicted": round(
+                pred_type_counts.get(kind, 0) / pred_type_total, 4
+            )
+            if pred_type_total
+            else 0.0,
+        }
+        for kind in type_kinds
+    }
+    type_ratio_l1 = sum(
+        abs(
+            (ref_type_counts.get(kind, 0) / ref_type_total if ref_type_total else 0.0)
+            - (
+                pred_type_counts.get(kind, 0) / pred_type_total
+                if pred_type_total
+                else 0.0
+            )
+        )
+        for kind in type_kinds
+    )
+    # L1 distance between two distributions is in [0, 2]; halving maps it to
+    # total variation in [0, 1] and the score to "1 = identical mix".
+    type_ratio_score = max(0.0, 1.0 - type_ratio_l1 / 2.0)
+
+    weighted_components: list[tuple[float, float]] = [
+        (f1, 1.0),
+        (position, 1.0),
+        (type_accuracy, 1.0),
+    ]
     if slide_endpoint is not None:
-        components.append(slide_endpoint)
-    note_score = sum(components) / len(components)
+        weighted_components.append((slide_endpoint, 1.0))
+    if type_ratio_weight > 0:
+        weighted_components.append((type_ratio_score, float(type_ratio_weight)))
+    weight_sum = sum(weight for _, weight in weighted_components)
+    note_score = (
+        sum(value * weight for value, weight in weighted_components) / weight_sum
+        if weight_sum
+        else 0.0
+    )
     chord_excess_ticks = sum(
         r["chord"]["predicted_excess_ticks"] for r in results
     )
@@ -1131,6 +1290,18 @@ def _aggregate_note_results(
         "onset_recall": round(recall, 4),
         "position_accuracy": round(position, 4),
         "type_accuracy": round(type_accuracy, 4),
+        # Distribution-level checks; `type_accuracy` alone cannot detect
+        # systematic over-generation of one event kind.
+        "type_ratio_score": round(type_ratio_score, 4),
+        "type_ratio_l1": round(type_ratio_l1, 4),
+        "type_ratios": type_ratios,
+        "type_counts": {
+            kind: {
+                "reference": ref_type_counts.get(kind, 0),
+                "predicted": pred_type_counts.get(kind, 0),
+            }
+            for kind in type_kinds
+        },
         "exact_accuracy": round(exact, 4),
         "mean_time_error_ms": round(time_error, 3),
         "slide_endpoint_accuracy": round(slide_endpoint, 4)

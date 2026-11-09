@@ -8,8 +8,8 @@ except ImportError:
     HAS_TORCH = False
 
 if HAS_TORCH:
-    from mainote.maidata import Duration, Event
-    from mainote.ml.infer import _repair_events
+    from mainote.maidata import Chart, Duration, Event, SlideSegment
+    from mainote.ml.infer import _repair_events, _type_distribution
 
 
 @unittest.skipUnless(HAS_TORCH, "torch is required")
@@ -48,6 +48,48 @@ class TestRepairEvents(unittest.TestCase):
         repaired, warnings = _repair_events(events)
         self.assertEqual(len(repaired), 4)
         self.assertFalse(any("outer notes at one tick" in w for w in warnings))
+
+    def test_type_distribution_warns_on_slide_collapse(self):
+        events = [
+            Event(tick=index * 20, kind="tap", position="1")
+            for index in range(10)
+        ]
+        events += [
+            Event(
+                tick=1000 + index * 20,
+                kind="slide",
+                position="2",
+                slide=[SlideSegment(shape="-", end="5")],
+            )
+            for index in range(40)
+        ]
+        stats, counts, ratios, warnings = _type_distribution(
+            Chart(index=5, events=events, initial_bpm=120)
+        )
+        self.assertEqual(stats["notes_total"], 50)
+        self.assertEqual(counts["slide"], 40)
+        self.assertAlmostEqual(ratios["slide"], 0.8)
+        self.assertTrue(any("type-collapsed" in warning for warning in warnings))
+
+    def test_type_distribution_stays_quiet_on_normal_mix(self):
+        events = [
+            Event(tick=index * 20, kind="tap", position="1")
+            for index in range(90)
+        ]
+        events += [
+            Event(
+                tick=2000 + index * 20,
+                kind="slide",
+                position="2",
+                slide=[SlideSegment(shape="-", end="5")],
+            )
+            for index in range(10)
+        ]
+        _, _, ratios, warnings = _type_distribution(
+            Chart(index=5, events=events, initial_bpm=120)
+        )
+        self.assertAlmostEqual(ratios["slide"], 0.1)
+        self.assertFalse(any("type-collapsed" in warning for warning in warnings))
 
 
 if __name__ == "__main__":

@@ -31,6 +31,11 @@ from .features import log_mel_spectrogram
 from .model import ChartModel, ChartModelConfig, build_model
 from .tokenizer import ChartVocabulary, EventTokenizer
 
+# Local dataset priors: 9.1% of events across all charts and 13.6% across
+# master charts are slides (worst single chart 43.5%).  A generated chart far
+# above that is a checkpoint/decoding failure, not a style choice.
+SLIDE_RATIO_WARNING = 0.30
+
 
 def load_checkpoint(
     checkpoint_path: str | Path,
@@ -271,6 +276,9 @@ def infer(
         metadata={"lv": _fmt_level(level_value), "des": "mainote-p3"},
         end_tick=_round_up_bar(max(e.end_tick() for e in events)),
     )
+    stats, type_counts, type_ratios, type_warnings = _type_distribution(chart)
+    warnings.extend(type_warnings)
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     report = validate_chart(chart)
@@ -311,7 +319,9 @@ def infer(
         "checkpoint": checkpoint_path,
         "maidata": str(output_path),
         "notes": chart.note_count,
-        "notes_per_second": chart_stats(chart)["notes_per_second"],
+        "notes_per_second": stats["notes_per_second"],
+        "type_counts": type_counts,
+        "type_ratios": type_ratios,
         "difficulty": _normalize_difficulty(difficulty),
         "level": _fmt_level(level_value),
         "bpm": initial_bpm,
@@ -379,6 +389,34 @@ def _round_up_bar(tick: int) -> int:
     if tick <= 0:
         return TICKS_PER_BAR
     return ((tick + TICKS_PER_BAR - 1) // TICKS_PER_BAR) * TICKS_PER_BAR
+
+
+def _type_distribution(
+    chart: Chart,
+) -> tuple[dict[str, Any], dict[str, int], dict[str, float], list[str]]:
+    """Event-type counts/ratios plus a collapse warning.
+
+    The warning keeps a slide-heavy checkpoint from looking successful just
+    because the chart validates and renders.  A healthy chart rarely exceeds
+    ~15% slides; the local dataset master prior is 13.6%.
+    """
+    stats = chart_stats(chart)
+    type_counts = {
+        kind: int(count) for kind, count in stats["counts"].items() if count
+    }
+    type_ratios = {
+        kind: round(count / max(1, chart.note_count), 4)
+        for kind, count in type_counts.items()
+    }
+    warnings: list[str] = []
+    slide_ratio = type_ratios.get("slide", 0.0)
+    if chart.note_count >= 50 and slide_ratio > SLIDE_RATIO_WARNING:
+        warnings.append(
+            f"slide share {slide_ratio:.1%} is far above typical charts "
+            f"(about 9-14%); the checkpoint may be type-collapsed. Try "
+            "another checkpoint or --temperature 0.6."
+        )
+    return stats, type_counts, type_ratios, warnings
 
 
 def _repair_events(events: list[Event]) -> tuple[list[Event], list[str]]:

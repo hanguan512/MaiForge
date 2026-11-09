@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,7 @@ class ChartWindowDataset(Dataset):
         min_alignment: float = 0.0,
         augment: bool = False,
         spec_augment: dict[str, Any] | None = None,
+        shuffle_same_tick_events: bool = False,
         chart_cache_size: int = 512,
         feature_cache_size: int = 64,
     ):
@@ -65,6 +67,7 @@ class ChartWindowDataset(Dataset):
         self.max_tokens = max_tokens
         self.augment = augment
         self.spec_augment = spec_augment or {}
+        self.shuffle_same_tick_events = shuffle_same_tick_events
         self.chart_cache_size = chart_cache_size
         self.feature_cache_size = feature_cache_size
         self._feature_cache: OrderedDict[str, tuple[np.ndarray, float]] = OrderedDict()
@@ -180,12 +183,23 @@ class ChartWindowDataset(Dataset):
         level = row.get("level_num")
         if level is None:
             level = row.get("level")
+        shuffle_seed = None
+        if self.shuffle_same_tick_events:
+            # Stable per window: the same window must tokenize identically in
+            # every epoch, in validation, and in the usability check, or the
+            # cached token counts and val loss stop being comparable.
+            sample_id = str(row.get("sample_id") or row.get("song_id", ""))
+            shuffle_seed = zlib.crc32(
+                f"{sample_id}:{spec.start_bar}:{spec.end_bar}".encode("utf-8")
+            )
         return self.tokenizer.encode_chart(
             chart,
             start_tick=spec.start_bar * TICKS_PER_BAR,
             end_tick=spec.end_bar * TICKS_PER_BAR,
             difficulty_index=difficulty_index,
             level=level,
+            shuffle_same_tick=self.shuffle_same_tick_events,
+            shuffle_seed=shuffle_seed,
         )
 
     def _window_frame_bounds(

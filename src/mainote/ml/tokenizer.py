@@ -18,6 +18,7 @@ One time unit is 20 ticks (1/48 beat); a 4/4 bar has 192 units.  That supports
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -750,6 +751,8 @@ class EventTokenizer:
         difficulty_index: int | None = None,
         level: str | float | None = None,
         include_special: bool = True,
+        shuffle_same_tick: bool = False,
+        shuffle_seed: int | None = None,
     ) -> list[str]:
         if start_tick % TICKS_PER_BAR != 0:
             raise TokenizeError("window start_tick must be bar-aligned")
@@ -759,10 +762,16 @@ class EventTokenizer:
             tokens.append("BOS")
             tokens.append(f"DIFF_{difficulty_index or chart.index}")
             tokens.append(f"LEVEL_{level_bucket(level if level is not None else chart.level)}")
+        events = [
+            event
+            for event in chart.events
+            if start_tick <= event.tick < end_tick
+        ]
+        events.sort(key=lambda e: e.sort_key())
+        if shuffle_same_tick:
+            self._shuffle_same_tick(events, shuffle_seed)
         last_bar = 0
-        for event in sorted(chart.events, key=lambda e: e.sort_key()):
-            if event.tick < start_tick or event.tick >= end_tick:
-                continue
+        for event in events:
             bar, unit = self._relative_bar_unit(event.tick, start_tick)
             while last_bar < bar:
                 tokens.append("BAR")
@@ -782,6 +791,8 @@ class EventTokenizer:
         difficulty_index: int | None = None,
         level: str | float | None = None,
         include_special: bool = True,
+        shuffle_same_tick: bool = False,
+        shuffle_seed: int | None = None,
     ) -> list[int]:
         return self.vocab.encode(
             self.tokenize_chart(
@@ -791,8 +802,33 @@ class EventTokenizer:
                 difficulty_index=difficulty_index,
                 level=level,
                 include_special=include_special,
+                shuffle_same_tick=shuffle_same_tick,
+                shuffle_seed=shuffle_seed,
             )
         )
+
+    @staticmethod
+    def _shuffle_same_tick(events: list[Event], seed: int | None) -> None:
+        """Shuffle the events that share a tick, in place.
+
+        ``Event.sort_key`` orders kinds alphabetically (hold < slide < tap), so
+        every same-tick slide was tokenized before the taps, and a slide+hold
+        chord always emitted the hold first.  The model can learn that
+        positional pattern instead of the audio condition.  A seeded shuffle
+        per window removes the spurious cue while keeping the event multiset
+        and the per-event ``T_`` time tokens unchanged.
+        """
+        rng = random.Random(seed)
+        index = 0
+        while index < len(events):
+            end = index + 1
+            while end < len(events) and events[end].tick == events[index].tick:
+                end += 1
+            if end - index > 1:
+                group = events[index:end]
+                rng.shuffle(group)
+                events[index:end] = group
+            index = end
 
     def detokenize(
         self,

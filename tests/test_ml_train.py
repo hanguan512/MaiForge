@@ -15,8 +15,10 @@ if HAS_TORCH:
     from mainote.ml.model import ChartModelConfig, build_model
     from mainote.ml.train import (
         ClassAccuracy,
+        _aggregate_note_results,
         _decode_budget,
         _trim_generated_events,
+        build_optimizer,
         build_token_weights,
         load_init_weights,
         sequence_cross_entropy,
@@ -166,7 +168,118 @@ class TestTrainingLoss(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_TORCH, "torch is required")
+class TestOptimizerGroups(unittest.TestCase):
+    def _model(self, **overrides):
+        vocab = ChartVocabulary.default()
+        cfg = ChartModelConfig(
+            **{
+                "hidden": 16,
+                "audio_layers": 1,
+                "decoder_layers": 1,
+                "heads": 4,
+                "ffn": 32,
+                "dropout": 0.0,
+                "max_audio_frames": 64,
+                "max_tokens": 32,
+                "n_mels": 16,
+                **overrides,
+            }
+        )
+        model = build_model(
+            len(vocab.tokens), cfg, pad_id=vocab.pad_id, vocab_tokens=vocab.tokens
+        )
+        return model
+
+    def test_warm_start_scales_backbone_and_feature_lrs(self):
+        model = self._model(position_features=True, duration_features=True)
+        optimizer = build_optimizer(
+            model,
+            {
+                "lr": 1e-3,
+                "weight_decay": 0.2,
+                "warm_start_lr_scale": 0.1,
+                "feature_lr_multiplier": 3.0,
+            },
+            warm_start=True,
+        )
+        groups = {group["name"]: group for group in optimizer.param_groups}
+        self.assertAlmostEqual(groups["backbone"]["lr"], 1e-4)
+        self.assertAlmostEqual(groups["structured_features"]["lr"], 3e-3)
+        self.assertEqual(groups["backbone"]["weight_decay"], 0.2)
+        # Zero-init feature tables should not be pulled back toward zero.
+        self.assertEqual(groups["structured_features"]["weight_decay"], 0.0)
+        self.assertEqual(len(groups["structured_features"]["params"]), 2)
+
+    def test_featureless_model_has_a_single_group(self):
+        model = self._model()
+        optimizer = build_optimizer(
+            model, {"lr": 1e-3, "warm_start_lr_scale": 0.1}, warm_start=True
+        )
+        self.assertEqual(len(optimizer.param_groups), 1)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-4)
+        self.assertEqual(optimizer.param_groups[0]["name"], "backbone")
+
+    def test_invalid_scales_are_rejected(self):
+        model = self._model()
+        with self.assertRaises(ValueError):
+            build_optimizer(model, {"lr": 1e-3, "feature_lr_multiplier": 0.0})
+        with self.assertRaises(ValueError):
+            build_optimizer(
+                model, {"lr": 0.0}, warm_start=True
+            )
+
+
+@unittest.skipUnless(HAS_TORCH, "torch is required")
 class TestNoteEvalHelpers(unittest.TestCase):
+    @staticmethod
+    def _result(ref_counts: dict[str, int], pred_counts: dict[str, int]):
+        return {
+            "counts": {"matched": 2, "reference": 4, "predicted": 4},
+            "position_accuracy": 0.5,
+            "type_accuracy": 0.5,
+            "exact_accuracy": 0.0,
+            "onset": {"mean_time_error_ms": 10.0},
+            "slide": {"matched": 0, "endpoint_accuracy": None},
+            "chord": {
+                "predicted_excess_ticks": 0,
+                "predicted_outer_ticks": 0,
+                "predicted_max_outer": 1,
+            },
+            "stats": {
+                "type_counts": {
+                    "tap": {
+                        "reference": ref_counts["tap"],
+                        "predicted": pred_counts["tap"],
+                    },
+                    "slide": {
+                        "reference": ref_counts["slide"],
+                        "predicted": pred_counts["slide"],
+                    },
+                }
+            },
+        }
+
+    def test_aggregate_scores_type_distribution_shift(self):
+        balanced = _aggregate_note_results(
+            [self._result({"tap": 3, "slide": 1}, {"tap": 3, "slide": 1})], 0
+        )
+        collapsed = _aggregate_note_results(
+            [self._result({"tap": 3, "slide": 1}, {"tap": 1, "slide": 3})], 0
+        )
+        self.assertAlmostEqual(balanced["type_ratio_l1"], 0.0)
+        self.assertAlmostEqual(balanced["type_ratio_score"], 1.0)
+        self.assertAlmostEqual(collapsed["type_ratio_l1"], 1.0)
+        self.assertAlmostEqual(collapsed["type_ratio_score"], 0.5)
+        self.assertEqual(collapsed["type_counts"]["slide"]["predicted"], 3)
+        self.assertLess(collapsed["note_score"], balanced["note_score"])
+
+    def test_type_ratio_weight_can_disable_the_distribution_term(self):
+        result = self._result({"tap": 3, "slide": 1}, {"tap": 1, "slide": 3})
+        disabled = _aggregate_note_results([result], 0, type_ratio_weight=0.0)
+        # f1 = 0.5, position = 0.5, type accuracy = 0.5, no slide endpoints.
+        self.assertAlmostEqual(disabled["note_score"], 0.5)
+        self.assertAlmostEqual(disabled["type_ratio_score"], 0.5)
+
     def test_decode_budget_tracks_reference_length(self):
         self.assertEqual(_decode_budget(4, 2048), 64)
         self.assertEqual(_decode_budget(100, 2048), 232)

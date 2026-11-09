@@ -192,12 +192,26 @@ epoch_NNN.pt       # 每 save_every 个 epoch
   用于和旧实验对比。两者都应与 `val_loss` 一起看。
 - `val_class_accuracy` 中 `duration` 通常虚高（时长 token 占 86%），重点看
   `type`、`position`、`structure`。
-- `note_eval.note_score` 是 onset F1、位置准确率、类型准确率和 slide 终点准确率
-  （有 slide 时）的平均值。它比 token accuracy 更接近真实谱面质量。
+- `note_eval.note_score` 是 onset F1、位置准确率、类型准确率、事件类型分布得分
+  `type_ratio_score`（有 slide 时再加 slide 终点准确率）的加权平均。权重可用
+  `note_eval.type_ratio_weight` 调整（默认 1.0，设为 0 退回旧公式）。
+  `type_accuracy` 只看已匹配音符的类型，发现不了“大量 tap 被写成 slide”这类
+  分布塌缩，因此 `metrics.jsonl` 同时记录 `type_ratios`、`type_ratio_l1`
+  （两个分布的总变差距离 ×2）和 `type_ratio_score`（1 = 分布完全一致）。
+  也可以把 `checkpoint_metric` 设为 `type_ratio_score` 单独按分布选模
+  （该指标越大越好）。
 - `note_eval` 每 `every_n_epochs` 个 epoch 在 `max_songs` 首歌、`max_windows`
   个窗口上解码一次；窗口数越大越慢。默认是 4 首歌 × 8 个窗口，且每个窗口的
   解码预算会按参考 token 数动态收紧（最多 `max_new_tokens`）。关闭时把
   `note_eval.enabled` 设为 false，并把 `checkpoint_metric` 设回 `val_loss`。
+- 热启动（`--init-from`）会把 backbone LR 乘以 `warm_start_lr_scale`（默认 0.1），
+  并把 `position_proj`/`duration_proj` 的 LR 乘以 `feature_lr_multiplier`
+  （默认 1.0；结构化特征配置里设为 3.0）。这样零初始化的新投影能快速学习，
+  同时不会在它们还接近零时洗掉预训练模型的类型先验。启动日志的 `lr_groups`
+  和每步日志的 `lr`/`lr_feature` 会打印实际学习率。
+- 同 tick 的多个事件按 `Event.sort_key()` 排序时 slide 永远排在 tap 前面，
+  模型可能把“先 slide 后 tap”当成伪规律。`data.shuffle_same_tick_events: true`
+  用每个窗口的稳定种子打乱同 tick 内的顺序，事件集合和 `T_` 时间结构不变。
 - 如果 `max_steps` 小于 `warmup_steps`，warmup 会自动截断到总步数的 10%，并在
   启动日志中记录 `warmup_clamped_from`；短跑结果不能代表正式训练。
 - 规则 baseline 仍然是对照组：只学会密度的模型并不算更好。
@@ -243,6 +257,10 @@ out/p3/p3_summary.json
 排查。若某个窗口的 mel 帧数超过 `model.max_audio_frames`，`p3_summary.json` 的
 `warnings` 会提示编码器将截断尾部音频。
 
+`p3_summary.json` 还会写入 `type_counts` / `type_ratios`。如果生成谱面的 slide
+占比超过 30% 且音符数 ≥ 50，`warnings` 会提示 checkpoint 可能发生了类型塌缩；
+本地 master 谱面的 slide 先验约为 13.6%，全库约 9.1%。
+
 ## 6. 评估
 
 ```bash
@@ -256,6 +274,19 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 - 报告 onset F1、类型/位置准确率、时长误差和难度统计；
 - 同时对比规则 baseline（`mainote generate`）和人工试听。
   只看 token loss 不能判断谱面质量。
+
+怀疑模型发生类型塌缩（例如输出大量 slide、几乎没有 tap）时，先做
+teacher-forcing 诊断，不必等慢速解码：
+
+```bash
+PYTHONPATH=src python scripts/diagnose_type_bias.py \
+  --checkpoint runs/p3_posdur_warm/best.pt --split val
+```
+
+输出 gold / teacher-forced argmax 的类型比例、gold→predicted 混淆矩阵、
+type accuracy，以及 `position_proj` / `duration_proj` 增量的平均范数和 token
+embedding 范数。如果 teacher-forced argmax 本身就过度预测 slide，问题在
+checkpoint 而不是采样温度/top-k。
 
 ## 7. 架构说明
 
@@ -295,8 +326,10 @@ python -m mainote eval out/p3/maidata.txt reference.txt --index 5
 | val loss 不降 | 增加数据、降低 LR、增加 dropout、检查对齐 |
 | checkpoint 无法加载 | v1 与 v2 架构不兼容，必须用当前配置重训 |
 | `note_eval` 太慢 | 减少 `max_songs`/`max_windows`/`max_new_tokens`，或调大 `every_n_epochs` |
+| 输出以 slide 为主、几乎没有 tap | 运行 `scripts/diagnose_type_bias.py`；确认是 checkpoint 塌缩还是采样问题。热启动用 `warm_start_lr_scale`/`feature_lr_multiplier`，并保持 `shuffle_same_tick_events: true` |
 | 推理校验失败 | 模型欠训练；延长训练或减小窗口，检查 `p3_ir.json` |
 | 推理太慢 | 解码是逐 token 的（暂无 KV cache）；用 GPU、缩短窗口，或降低 `max_new_tokens` |
+| `--resume` 报 optimizer 参数组不匹配 | 旧 checkpoint 只有一个参数组；改用 `--init-from` 继续，或重新训练 |
 
 ## 9. 数据规模
 

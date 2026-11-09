@@ -87,6 +87,42 @@ class TestTokenizer(unittest.TestCase):
         self.assertEqual(expected, actual)
         self.assertGreater(len(actual), 0)
 
+    def test_same_tick_shuffle_preserves_events_and_is_deterministic(self):
+        chart = parse_maidata_text(
+            "&wholebpm=120\n&inote_5=(120){4}1/3/5/7,2/4/6/8,E\n"
+        ).chart(5)
+        tokenizer = EventTokenizer()
+        plain = tokenizer.tokenize_chart(chart)
+        shuffled = tokenizer.tokenize_chart(
+            chart, shuffle_same_tick=True, shuffle_seed=7
+        )
+        # Same token multiset (only the order inside each tick changes).
+        self.assertEqual(sorted(plain), sorted(shuffled))
+        self.assertNotEqual(plain, shuffled)
+        self.assertEqual(
+            shuffled,
+            tokenizer.tokenize_chart(
+                chart, shuffle_same_tick=True, shuffle_seed=7
+            ),
+        )
+        plain_events = tokenizer.detokenize(plain).events
+        shuffled_events = tokenizer.detokenize(shuffled).events
+        self.assertEqual(
+            [e.signature() for e in sorted(plain_events, key=lambda e: e.sort_key())],
+            [
+                e.signature()
+                for e in sorted(shuffled_events, key=lambda e: e.sort_key())
+            ],
+        )
+        # Time grouping is untouched: one T_ token per event, same sequence.
+        time_tokens = [
+            token for token in plain if token.startswith("T_")
+        ]
+        self.assertEqual(
+            time_tokens,
+            [token for token in shuffled if token.startswith("T_")],
+        )
+
     def test_vocabulary_save_load(self):
         vocab = ChartVocabulary.default()
         with tempfile.TemporaryDirectory() as tmp:

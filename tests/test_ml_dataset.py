@@ -112,6 +112,21 @@ class TestChartWindowDataset(unittest.TestCase):
             dataset.skipped_windows.get("overlong_tokens", 0), 0
         )
 
+    def test_same_tick_shuffle_is_deterministic_and_keeps_tokens(self):
+        plain = self._dataset()
+        shuffled = self._dataset(shuffle_same_tick_events=True)
+        self.assertGreater(len(shuffled), 0)
+        self.assertTrue(shuffled.shuffle_same_tick_events)
+        for index in range(min(2, len(shuffled))):
+            self.assertEqual(
+                sorted(plain[index]["tokens"]),
+                sorted(shuffled[index]["tokens"]),
+            )
+        # Each window gets a stable seed, so two dataset instances tokenize
+        # identically (training, validation and the usability check agree).
+        again = self._dataset(shuffle_same_tick_events=True)
+        self.assertEqual(shuffled[0]["tokens"], again[0]["tokens"])
+
 
 if __name__ == "__main__":
     unittest.main()
